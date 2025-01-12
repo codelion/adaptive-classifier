@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from collections import defaultdict
 import faiss
 import logging
@@ -75,14 +75,16 @@ class PrototypeMemory:
         Returns:
             List of (label, distance) tuples
         """
+        # Handle empty index case
+        if self.index.ntotal == 0:
+            return []
+            
         # Ensure the query is in the right format
         query_np = query_embedding.unsqueeze(0).numpy()
         
-        # Search the index
-        distances, indices = self.index.search(
-            query_np,
-            min(k, self.index.ntotal)
-        )
+        # Search the index with valid k
+        k = min(k, self.index.ntotal)
+        distances, indices = self.index.search(query_np, k)
         
         # Convert to labels and scores
         results = []
