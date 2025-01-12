@@ -116,6 +116,10 @@ class AdaptiveClassifier:
         # Get prototype predictions
         proto_preds = self.memory.get_nearest_prototypes(embedding, k=k)
         
+        # If no prototypes yet, return empty list
+        if not proto_preds and not self.adaptive_head:
+            return []
+        
         # Get neural predictions if available
         if self.adaptive_head is not None:
             self.adaptive_head.eval()
@@ -132,6 +136,10 @@ class AdaptiveClassifier:
         else:
             head_preds = []
         
+        # If no predictions from either method, return empty list
+        if not proto_preds and not head_preds:
+            return []
+        
         # Combine predictions
         combined_scores = {}
         
@@ -143,7 +151,9 @@ class AdaptiveClassifier:
             combined_scores[label] = score * proto_weight
             
         for label, score in head_preds:
-            combined_scores[label] = combined_scores.get(label, 0) + score * head_weight
+            combined_scores[label] = (
+                combined_scores.get(label, 0) + score * head_weight
+            )
         
         # Sort and return top-k
         predictions = sorted(
@@ -275,7 +285,7 @@ class AdaptiveClassifier:
         
         # Save tensors
         save_file(tensor_dict, save_dir / 'tensors.safetensors')
-    
+
     @classmethod
     def load(
         cls,
@@ -332,7 +342,9 @@ class AdaptiveClassifier:
             if prototype_key in tensors:
                 prototype = tensors[prototype_key]
                 classifier.memory.prototypes[label] = prototype
-                classifier.memory.index.add(prototype.unsqueeze(0).numpy())
+        
+        # Explicitly restore memory system state
+        classifier.memory._restore_from_save()
         
         # Rebuild adaptive head if it exists
         adaptive_head_params = {

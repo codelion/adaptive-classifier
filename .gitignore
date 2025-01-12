@@ -171,3 +171,4 @@ cython_debug/
 .pypirc
 
 **/.DS_store
+demo_classifier/

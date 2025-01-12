@@ -127,8 +127,27 @@ class PrototypeMemory:
         self.label_to_index.clear()
         self.index_to_label.clear()
         
-        # Add all prototypes
-        for i, (label, prototype) in enumerate(self.prototypes.items()):
+        # Add all prototypes in sorted order to ensure consistent indices
+        sorted_labels = sorted(self.prototypes.keys())
+        for i, label in enumerate(sorted_labels):
+            prototype = self.prototypes[label]
+            self.index.add(prototype.unsqueeze(0).numpy())
+            self.label_to_index[label] = i
+            self.index_to_label[i] = label
+            
+        self.updates_since_rebuild = 0
+
+    def _restore_from_save(self):
+        """Restore index and mappings after loading from save."""
+        # Clear existing index
+        self.index = faiss.IndexFlatL2(self.embedding_dim)
+        self.label_to_index.clear()
+        self.index_to_label.clear()
+        
+        # Add prototypes in sorted order for consistency
+        sorted_labels = sorted(self.prototypes.keys())
+        for i, label in enumerate(sorted_labels):
+            prototype = self.prototypes[label]
             self.index.add(prototype.unsqueeze(0).numpy())
             self.label_to_index[label] = i
             self.index_to_label[i] = label

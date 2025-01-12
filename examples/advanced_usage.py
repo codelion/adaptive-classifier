@@ -1,7 +1,6 @@
 import torch
 from adaptive_classifier import AdaptiveClassifier
 from torch.utils.data import Dataset, DataLoader
-import pandas as pd
 from typing import List, Tuple
 import logging
 import time
@@ -116,6 +115,56 @@ def demonstrate_continuous_learning():
     
     return classifier
 
+def demonstrate_persistence():
+    # 1. Create and train initial classifier
+    print("Phase 1: Creating and training initial classifier")
+    classifier = AdaptiveClassifier("bert-base-uncased")
+    
+    # Add some initial examples
+    initial_texts = [
+        "This product is amazing!",
+        "Terrible experience",
+        "Neutral about this"
+    ]
+    initial_labels = ["positive", "negative", "neutral"]
+    
+    classifier.add_examples(initial_texts, initial_labels)
+    
+    # Save the state
+    print("\nSaving classifier ...")
+    classifier.save("./demo_classifier")
+    
+    # 2. Load the classifier in a new session
+    print("\nPhase 2: Loading classifier from saved state")
+    loaded_classifier = AdaptiveClassifier.load("./demo_classifier")
+    
+    # Verify it works with existing classes
+    test_text = "This is fantastic!"
+    predictions = loaded_classifier.predict(test_text)
+    print(f"\nPredictions using loaded classifier:")
+    print(f"Text: {test_text}")
+    for label, score in predictions:
+        print(f"{label}: {score:.4f}")
+    
+    # 3. Add new examples to loaded classifier
+    print("\nPhase 3: Adding new examples to loaded classifier")
+    new_texts = [
+        "Technical error occurred",
+        "System crashed"
+    ]
+    new_labels = ["technical"] * 2
+    
+    loaded_classifier.add_examples(new_texts, new_labels)
+    
+    # Save updated state
+    print("\nSaving updated classifier ...")
+    loaded_classifier.save("./demo_classifier")
+    
+    # Show final class distribution
+    print("\nFinal class distribution:")
+    for label, examples in loaded_classifier.memory.examples.items():
+        print(f"{label}: {len(examples)} examples")
+
 def demonstrate_multi_language():
     """Example of handling multiple languages"""
     logger.info("Demonstrating multi-language support...")
@@ -157,14 +206,10 @@ def demonstrate_multi_language():
     return classifier
 
 def main():
-    # Demonstrate batch processing
-    batch_classifier = demonstrate_batch_processing()
-    
-    # Demonstrate continuous learning
-    continuous_classifier = demonstrate_continuous_learning()
-    
-    # Demonstrate multi-language support
-    multilang_classifier = demonstrate_multi_language()
+    demonstrate_batch_processing()
+    demonstrate_continuous_learning()
+    demonstrate_persistence()
+    demonstrate_multi_language()
 
 if __name__ == "__main__":
     main()
