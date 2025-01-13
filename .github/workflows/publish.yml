@@ -24,7 +24,7 @@ jobs:
           pip install setuptools wheel
       - name: Run tests
         run: |
-          pip install pytest
+          pip install pytest pytest-cov pytest-randomly psutil
           pytest tests/
       - name: Build package
         run: |
