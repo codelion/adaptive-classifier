@@ -226,16 +226,17 @@ class AdaptiveClassifier:
         if not text:
             raise ValueError("Empty input text")
         
-        # Get embedding
-        embedding = self._get_embeddings([text])[0]
-        
-        # Get prototype predictions
-        proto_preds = self.memory.get_nearest_prototypes(embedding, k=k)
-        
-        # Get neural predictions if available
-        if self.adaptive_head is not None:
-            self.adaptive_head.eval()
-            with torch.no_grad():
+        # Ensure deterministic behavior
+        with torch.no_grad():
+            # Get embedding
+            embedding = self._get_embeddings([text])[0]
+            
+            # Get prototype predictions
+            proto_preds = self.memory.get_nearest_prototypes(embedding, k=k)
+            
+            # Get neural predictions if available
+            if self.adaptive_head is not None:
+                self.adaptive_head.eval()  # Ensure eval mode
                 logits = self.adaptive_head(embedding.to(self.device))
                 probs = F.softmax(logits, dim=0)
                 
@@ -244,8 +245,8 @@ class AdaptiveClassifier:
                     (self.id_to_label[idx.item()], prob.item())
                     for prob, idx in zip(values, indices)
                 ]
-        else:
-            head_preds = []
+            else:
+                head_preds = []
         
         # Combine predictions with adjusted weights
         combined_scores = {}
