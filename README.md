@@ -102,6 +102,6 @@ If you use this library in your research, please cite:
   author = {Asankhaya Sharma},
   year = {2025},
   publisher = {GitHub},
-  url = {https://github.com/yourusername/adaptive-classifier}
+  url = {https://github.com/codelion/adaptive-classifier}
 }
 ```
