@@ -4,7 +4,7 @@ A flexible, adaptive classification system that allows for dynamic addition of n
 
 ## Features
 
-- 🚀 Works with any transformer classification model
+- 🚀 Works with any transformer classifier model
 - 📈 Continuous learning capabilities
 - 🎯 Dynamic class addition
 - 💾 Safe and efficient state persistence
