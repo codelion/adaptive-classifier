@@ -51,20 +51,38 @@ def test_prototype_update(memory, example_embedding):
     assert torch.allclose(expected_prototype, actual_prototype)
 
 def test_nearest_prototypes(memory, example_embedding):
-    # Add examples for different classes
+    """Test finding nearest prototypes with distinct embeddings per class."""
+    # Add examples for different classes with distinct embeddings
     classes = ["positive", "negative", "neutral"]
     
-    for cls in classes:
-        example = Example(f"text_{cls}", cls, example_embedding + len(cls))
+    # Create distinct embeddings for each class to ensure different distances
+    for i, cls in enumerate(classes):
+        # Create a unique shift for each class
+        shift = torch.zeros_like(example_embedding)
+        shift[i] = 1.0  # Make each class different in one dimension
+        
+        class_embedding = example_embedding + shift
+        example = Example(f"text_{cls}", cls, class_embedding)
         memory.add_example(example, cls)
     
-    # Query
-    query = example_embedding + 1  # Should be closest to "positive"
+    # Force index rebuild to ensure it's up to date
+    memory._rebuild_index()
+    
+    # Create query closest to positive class
+    query = example_embedding.clone()
+    query[0] = 1.0  # Makes it closest to positive class
+    
+    # Get nearest prototypes
     results = memory.get_nearest_prototypes(query, k=3)
     
-    assert len(results) == 3
+    # Verify results
+    assert len(results) == 3, f"Expected 3 results, got {len(results)}"
     assert all(isinstance(label, str) and isinstance(score, float) 
               for label, score in results)
+    
+    # Verify scores sum close to 1 (since we normalize with softmax)
+    total_score = sum(score for _, score in results)
+    assert abs(total_score - 1.0) < 1e-5, f"Scores should sum to 1, got {total_score}"
 
 def test_memory_pruning(memory, example_embedding, config):
     memory = PrototypeMemory(embedding_dim=768, config=config)

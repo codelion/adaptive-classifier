@@ -85,43 +85,39 @@ class PrototypeMemory:
             Returns:
                 List of (label, similarity) tuples
             """
+            # Ensure index is up to date
+            if self.updates_since_rebuild >= self.config.prototype_update_frequency:
+                self._rebuild_index()
+                
             # Handle empty index case
             if self.index.ntotal == 0:
                 return []
                 
-            # Ensure the query is in the right format and normalized
-            query_np = torch.nn.functional.normalize(
-                query_embedding, 
-                p=2, 
-                dim=0
-            ).unsqueeze(0).numpy()
-            
+            # Ensure the query is in the right format
+            query_np = query_embedding.unsqueeze(0).numpy()
+                
             # Search the index with valid k
             k = min(k, self.index.ntotal)
             distances, indices = self.index.search(query_np, k)
             
+            # Convert distances to similarities using exponential scaling
+            similarities = np.exp(-distances[0])  # Apply to first (only) query result
+            
             # Convert to labels and scores
             results = []
-            for idx, dist in zip(indices[0], distances[0]):
+            for idx, similarity in zip(indices[0], similarities):
                 if idx >= 0:  # Valid index
                     label = self.index_to_label[int(idx)]
-                    # Convert distance to similarity score with sharper scaling
-                    similarity = float(torch.exp(-torch.tensor(dist) / 5.0))
-                    
-                    # Apply minimum similarity threshold if specified
-                    if min_similarity is None or similarity >= min_similarity:
-                        results.append((label, similarity))
+                    score = float(similarity)
+                    results.append((label, score))
             
-            # Normalize similarities using softmax if we have results
+            # Normalize scores with softmax
             if results:
-                similarities = torch.tensor([score for _, score in results])
-                normalized_similarities = torch.nn.functional.softmax(
-                    similarities / 0.1,  # Sharp temperature
-                    dim=0
-                )
+                scores = torch.tensor([score for _, score in results])
+                normalized_scores = torch.nn.functional.softmax(scores, dim=0)
                 results = [
                     (label, float(score)) 
-                    for (label, _), score in zip(results, normalized_similarities)
+                    for (label, _), score in zip(results, normalized_scores)
                 ]
             
             return results
