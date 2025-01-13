@@ -62,41 +62,61 @@ class PrototypeMemory:
             self._rebuild_index()
     
     def get_nearest_prototypes(
-        self,
-        query_embedding: torch.Tensor,
-        k: int = 5
-    ) -> List[Tuple[str, float]]:
-        """Find the nearest prototype neighbors for a query.
-        
-        Args:
-            query_embedding: Query embedding tensor
-            k: Number of neighbors to return
+            self,
+            query_embedding: torch.Tensor,
+            k: int = 5,
+            min_similarity: Optional[float] = None
+        ) -> List[Tuple[str, float]]:
+            """Find the nearest prototype neighbors for a query.
             
-        Returns:
-            List of (label, distance) tuples
-        """
-        # Handle empty index case
-        if self.index.ntotal == 0:
-            return []
-            
-        # Ensure the query is in the right format
-        query_np = query_embedding.unsqueeze(0).numpy()
-        
-        # Search the index with valid k
-        k = min(k, self.index.ntotal)
-        distances, indices = self.index.search(query_np, k)
-        
-        # Convert to labels and scores
-        results = []
-        for idx, dist in zip(indices[0], distances[0]):
-            if idx >= 0:  # Valid index
-                label = self.index_to_label[int(idx)]
-                # Convert distance to similarity score
-                # score = 1.0 / (1.0 + dist)
-                score = float(torch.exp(-torch.tensor(dist) / 10.0))  # Adjust scaling factor as needed
-                results.append((label, float(score)))
+            Args:
+                query_embedding: Query embedding tensor
+                k: Number of neighbors to return
+                min_similarity: Optional minimum similarity threshold
                 
-        return results
+            Returns:
+                List of (label, similarity) tuples
+            """
+            # Handle empty index case
+            if self.index.ntotal == 0:
+                return []
+                
+            # Ensure the query is in the right format and normalized
+            query_np = torch.nn.functional.normalize(
+                query_embedding, 
+                p=2, 
+                dim=0
+            ).unsqueeze(0).numpy()
+            
+            # Search the index with valid k
+            k = min(k, self.index.ntotal)
+            distances, indices = self.index.search(query_np, k)
+            
+            # Convert to labels and scores
+            results = []
+            for idx, dist in zip(indices[0], distances[0]):
+                if idx >= 0:  # Valid index
+                    label = self.index_to_label[int(idx)]
+                    # Convert distance to similarity score with sharper scaling
+                    similarity = float(torch.exp(-torch.tensor(dist) / 5.0))
+                    
+                    # Apply minimum similarity threshold if specified
+                    if min_similarity is None or similarity >= min_similarity:
+                        results.append((label, similarity))
+            
+            # Normalize similarities using softmax if we have results
+            if results:
+                similarities = torch.tensor([score for _, score in results])
+                normalized_similarities = torch.nn.functional.softmax(
+                    similarities / 0.1,  # Sharp temperature
+                    dim=0
+                )
+                results = [
+                    (label, float(score)) 
+                    for (label, _), score in zip(results, normalized_similarities)
+                ]
+            
+            return results
     
     def _update_prototype(self, label: str):
         """Update the prototype for a given label.
