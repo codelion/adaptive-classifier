@@ -92,7 +92,8 @@ class PrototypeMemory:
             if idx >= 0:  # Valid index
                 label = self.index_to_label[int(idx)]
                 # Convert distance to similarity score
-                score = 1.0 / (1.0 + dist)
+                # score = 1.0 / (1.0 + dist)
+                score = float(torch.exp(-torch.tensor(dist) / 10.0))  # Adjust scaling factor as needed
                 results.append((label, float(score)))
                 
         return results

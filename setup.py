@@ -6,6 +6,13 @@ with open("README.md", "r", encoding="utf-8") as fh:
 with open("requirements.txt", "r", encoding="utf-8") as fh:
     requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
 
+test_requirements = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-randomly>=3.12.0",
+    "psutil",
+]
+
 setup(
     name="adaptive-classifier",
     version="0.0.1",
@@ -33,5 +40,8 @@ setup(
     packages=find_packages(where="src"),
     python_requires=">=3.8",
     install_requires=requirements,
+    extras_require={
+        "test": test_requirements,
+    },
     include_package_data=True,
 )

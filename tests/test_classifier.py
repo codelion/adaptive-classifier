@@ -71,10 +71,14 @@ def test_save_load(base_classifier, sample_data):
         
         # Test predictions match
         test_text = "This is a test"
-        original_pred = base_classifier.predict(test_text)
-        loaded_pred = loaded_classifier.predict(test_text)
+        original_preds = base_classifier.predict(test_text)
+        loaded_preds = loaded_classifier.predict(test_text)
         
-        for (label1, score1), (label2, score2) in zip(original_pred, loaded_pred):
+        # Sort predictions by score to handle any order differences
+        original_preds = sorted(original_preds, key=lambda x: (-x[1], x[0]))
+        loaded_preds = sorted(loaded_preds, key=lambda x: (-x[1], x[0]))
+        
+        for (label1, score1), (label2, score2) in zip(original_preds, loaded_preds):
             assert label1 == label2
             assert abs(score1 - score2) < 1e-5
 
