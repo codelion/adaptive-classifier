@@ -97,6 +97,7 @@ The system combines three key components:
 
 ## References
 - [Lamini Classifier Agent Toolkit](https://www.lamini.ai/blog/classifier-agent-toolkit)
+- [Protoformer: Embedding Prototypes for Transformers](https://arxiv.org/abs/2206.12710)
 - [Overcoming catastrophic forgetting in neural networks](https://arxiv.org/abs/1612.00796)
 
 ## Citation
