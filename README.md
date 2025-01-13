@@ -95,6 +95,10 @@ The system combines three key components:
 - safetensors ≥ 0.3.1
 - faiss-cpu ≥ 1.7.4 (or faiss-gpu for GPU support)
 
+## References
+- [Lamini Classifier Agent Toolkit](https://www.lamini.ai/blog/classifier-agent-toolkit)
+- [Overcoming catastrophic forgetting in neural networks](https://arxiv.org/abs/1612.00796)
+
 ## Citation
 
 If you use this library in your research, please cite:
