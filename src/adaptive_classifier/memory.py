@@ -43,13 +43,25 @@ class PrototypeMemory:
         Args:
             example: Example to add
             label: Class label
+            
+        Raises:
+            ValueError: If example embedding dimension doesn't match memory dimension
         """
-        # Check if we need to prune examples
-        if len(self.examples[label]) >= self.config.max_examples_per_class:
-            self._prune_examples(label)
+        # Validate embedding dimension
+        if example.embedding is None:
+            raise ValueError("Example must have an embedding")
+        if example.embedding.size(-1) != self.embedding_dim:
+            raise ValueError(
+                f"Example embedding dimension {example.embedding.size(-1)} "
+                f"does not match memory dimension {self.embedding_dim}"
+            )
             
         # Add new example
         self.examples[label].append(example)
+        
+        # Check if we need to prune examples after adding
+        if len(self.examples[label]) > self.config.max_examples_per_class:
+            self._prune_examples(label)
         
         # Update prototype
         self._update_prototype(label)
@@ -181,29 +193,27 @@ class PrototypeMemory:
         self.updates_since_rebuild = 0
     
     def _prune_examples(self, label: str):
-        """Prune examples for a given label to maintain memory bounds.
-        
-        Args:
-            label: Label to prune examples for
-        """
+        """Prune examples for a given label to maintain memory bounds."""
         examples = self.examples[label]
         if not examples:
             return
             
-        # Compute distances to prototype
-        prototype = self.prototypes[label]
-        distances = []
+        # Compute distances to mean embedding (more stable than current prototype)
+        embeddings = torch.stack([ex.embedding for ex in examples])
+        mean_embedding = torch.mean(embeddings, dim=0)
         
+        distances = []
         for ex in examples:
-            dist = torch.norm(ex.embedding - prototype).item()
+            dist = torch.norm(ex.embedding - mean_embedding).item()
             distances.append(dist)
             
         # Sort by distance and keep closest examples
         sorted_indices = np.argsort(distances)
         keep_indices = sorted_indices[:self.config.max_examples_per_class]
         
-        # Update examples
+        # Update examples - ensure we don't exceed max size
         self.examples[label] = [examples[i] for i in keep_indices]
+        assert len(self.examples[label]) <= self.config.max_examples_per_class
     
     def get_stats(self) -> Dict[str, Any]:
         """Get memory statistics.
