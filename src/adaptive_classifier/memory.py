@@ -45,8 +45,7 @@ class PrototypeMemory:
             label: Class label
         """
         # Check if we need to prune examples
-        if (len(self.examples[label]) >= 
-            self.config.max_examples_per_class):
+        if len(self.examples[label]) >= self.config.max_examples_per_class:
             self._prune_examples(label)
             
         # Add new example
@@ -54,12 +53,21 @@ class PrototypeMemory:
         
         # Update prototype
         self._update_prototype(label)
+
+        # Only increment if we haven't just rebuilt
+        if not getattr(self, 'just_rebuilt', False):
+            self.updates_since_rebuild += 1
+            # print(f"updates_since_rebuild: {self.updates_since_rebuild}")
         
-        # Check if we need to rebuild index
-        self.updates_since_rebuild += 1
-        if (self.updates_since_rebuild >= 
-            self.config.prototype_update_frequency):
+        # If we've hit the frequency, rebuild
+        if self.updates_since_rebuild >= self.config.prototype_update_frequency:
+            # print("Index rebuild")
             self._rebuild_index()
+            self.just_rebuilt = True
+        else:
+            self.just_rebuilt = False
+            
+        # print(f"updates_since_rebuild: {self.updates_since_rebuild}")
     
     def get_nearest_prototypes(
             self,
@@ -156,6 +164,7 @@ class PrototypeMemory:
             self.label_to_index[label] = i
             self.index_to_label[i] = label
             
+        # Explicitly reset the counter
         self.updates_since_rebuild = 0
 
     def _restore_from_save(self):
