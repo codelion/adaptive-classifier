@@ -2,9 +2,6 @@
 
 A flexible, adaptive classification system that allows for dynamic addition of new classes and continuous learning from examples. Built on top of transformers from HuggingFace, this library provides an easy-to-use interface for creating and updating text classifiers.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1Zmvtb3XUFtUImEmYdKpkuqmxKVlRxzt9?usp=sharing)
-
-
 ## Features
 
 - 🚀 Works with any transformer classifier model
@@ -13,6 +10,15 @@ A flexible, adaptive classification system that allows for dynamic addition of n
 - 💾 Safe and efficient state persistence
 - 🔄 Prototype-based learning
 - 🧠 Neural adaptation layer
+
+## Try Now
+
+| Use Case | Base Model | Demonstrates | Link |
+|----------|------------|----------|-------|
+| Basic Example (Cat or Dog) | `distilbert/distilbert-base-cased` | Continuous learning | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1Zmvtb3XUFtUImEmYdKpkuqmxKVlRxzt9?usp=sharing) |
+| Support Ticket Classification | `google-bert/bert-large-cased` | Realistic examples | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1yeVCi_Cdx2jtM7HI0gbU6VlZDJsg_m8u?usp=sharing) |
+| Query Classification | `google-bert/bert-large-cased` | How to improve performance | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1b2q303CLDRQAkC65Rtwcoj09ovR0mGwz?usp=sharing) |
+| Multilingual Sentiment Analysis | `FacebookAI/xlm-roberta-large`, `bert-base-multilingual-cased` and `distilbert-base-multilingual-cased` | How to build an ensemble of classifiers | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/14tfRi_DtL-QgjBMgVRrsLwcov-zqbKBl?usp=sharing) |
 
 ## Installation
 
