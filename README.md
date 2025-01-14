@@ -17,8 +17,8 @@ A flexible, adaptive classification system that allows for dynamic addition of n
 |----------|----------|-------|
 | Basic Example (Cat or Dog)  | Continuous learning | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1Zmvtb3XUFtUImEmYdKpkuqmxKVlRxzt9?usp=sharing) |
 | Support Ticket Classification| Realistic examples | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1yeVCi_Cdx2jtM7HI0gbU6VlZDJsg_m8u?usp=sharing) |
-| Query Classification  | How to improve performance | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1b2q303CLDRQAkC65Rtwcoj09ovR0mGwz?usp=sharing) |
-| Multilingual Sentiment Analysis | How to build an ensemble of classifiers | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/14tfRi_DtL-QgjBMgVRrsLwcov-zqbKBl?usp=sharing) |
+| Query Classification  | Different configurations | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1b2q303CLDRQAkC65Rtwcoj09ovR0mGwz?usp=sharing) |
+| Multilingual Sentiment Analysis | Ensemble of classifiers | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/14tfRi_DtL-QgjBMgVRrsLwcov-zqbKBl?usp=sharing) |
 
 ## Installation
 
@@ -102,6 +102,8 @@ The system combines three key components:
 - faiss-cpu ≥ 1.7.4 (or faiss-gpu for GPU support)
 
 ## References
+
+- [Transformer^2: Self-adaptive LLMs](https://arxiv.org/abs/2501.06252)
 - [Lamini Classifier Agent Toolkit](https://www.lamini.ai/blog/classifier-agent-toolkit)
 - [Protoformer: Embedding Prototypes for Transformers](https://arxiv.org/abs/2206.12710)
 - [Overcoming catastrophic forgetting in neural networks](https://arxiv.org/abs/1612.00796)
