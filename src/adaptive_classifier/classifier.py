@@ -604,10 +604,12 @@ class AdaptiveClassifier:
             examples = sorted(self.memory.examples[label], key=lambda x: x.text)
             for example in examples:
                 all_embeddings.append(example.embedding)
-                all_labels.append(self.label_to_id[label])
+                # Convert string labels to numeric indices
+                all_labels.append(self.label_to_id[example.label])
         
         all_embeddings = torch.stack(all_embeddings)
-        all_labels = torch.tensor(all_labels)
+        # Ensure labels are Long tensor
+        all_labels = torch.tensor(all_labels, dtype=torch.long, device=self.device)
         
         # Normalize embeddings for stable training
         all_embeddings = F.normalize(all_embeddings, p=2, dim=1)
@@ -616,7 +618,7 @@ class AdaptiveClassifier:
         dataset = torch.utils.data.TensorDataset(all_embeddings, all_labels)
         loader = torch.utils.data.DataLoader(
             dataset,
-            batch_size=min(32, len(all_embeddings)),  # Smaller batch size for stability
+            batch_size=min(32, len(all_embeddings)),
             shuffle=True,
             generator=torch.Generator().manual_seed(42)
         )
@@ -624,9 +626,9 @@ class AdaptiveClassifier:
         # Training setup
         self.adaptive_head.train()
         criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.AdamW(  # Switch to AdamW for better stability
+        optimizer = torch.optim.AdamW(
             self.adaptive_head.parameters(),
-            lr=0.001,  # Lower learning rate
+            lr=0.001,
             weight_decay=0.01,
             betas=(0.9, 0.999)
         )
@@ -641,7 +643,7 @@ class AdaptiveClassifier:
         
         best_loss = float('inf')
         patience_counter = 0
-        patience = 3  # Early stopping patience
+        patience = 3
         
         for epoch in range(epochs):
             total_loss = 0
@@ -651,11 +653,20 @@ class AdaptiveClassifier:
                 
                 optimizer.zero_grad()
                 outputs = self.adaptive_head(batch_embeddings)
-                loss = criterion(outputs, batch_labels)
                 
+                # Add shape debugging
+                if epoch == 0 and total_loss == 0:  # Only for first batch of first epoch
+                    logger.debug(f"outputs shape: {outputs.shape}")
+                    logger.debug(f"batch_labels shape: {batch_labels.shape}")
+                    logger.debug(f"batch_labels content: {batch_labels}")
+                
+                loss = criterion(outputs, batch_labels)
                 loss.backward()
-                # Gradient clipping for stability
-                torch.nn.utils.clip_grad_norm_(self.adaptive_head.parameters(), max_norm=1.0)
+                
+                torch.nn.utils.clip_grad_norm_(
+                    self.adaptive_head.parameters(),
+                    max_norm=1.0
+                )
                 optimizer.step()
                 
                 total_loss += loss.item()
