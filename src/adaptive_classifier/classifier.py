@@ -237,13 +237,17 @@ class AdaptiveClassifier:
             # Get neural predictions if available
             if self.adaptive_head is not None:
                 self.adaptive_head.eval()  # Ensure eval mode
-                logits = self.adaptive_head(embedding.to(self.device))
+                # Add batch dimension and move to device
+                input_embedding = embedding.unsqueeze(0).to(self.device)
+                logits = self.adaptive_head(input_embedding)
+                # Squeeze batch dimension
+                logits = logits.squeeze(0)
                 probs = F.softmax(logits, dim=0)
                 
                 values, indices = torch.topk(probs, min(k, len(self.id_to_label)))
                 head_preds = [
-                    (self.id_to_label[idx.item()], prob.item())
-                    for prob, idx in zip(values, indices)
+                    (self.id_to_label[idx.item()], val.item())
+                    for val, idx in zip(values, indices)
                 ]
             else:
                 head_preds = []
@@ -506,7 +510,11 @@ class AdaptiveClassifier:
                 if self.adaptive_head is not None:
                     self.adaptive_head.eval()
                     with torch.no_grad():
-                        logits = self.adaptive_head(embedding.to(self.device))
+                        # Add batch dimension and move to device
+                        input_embedding = embedding.unsqueeze(0).to(self.device)
+                        logits = self.adaptive_head(input_embedding)
+                        # Squeeze batch dimension
+                        logits = logits.squeeze(0)
                         probs = F.softmax(logits, dim=0)
                         
                         values, indices = torch.topk(
@@ -514,8 +522,8 @@ class AdaptiveClassifier:
                             min(k, len(self.id_to_label))
                         )
                         head_preds = [
-                            (self.id_to_label[idx.item()], prob.item())
-                            for prob, idx in zip(values, indices)
+                            (self.id_to_label[idx.item()], val.item())
+                            for val, idx in zip(values, indices)
                         ]
                 else:
                     head_preds = []
@@ -544,7 +552,7 @@ class AdaptiveClassifier:
                 total = sum(score for _, score in predictions)
                 if total > 0:
                     predictions = [(label, score/total) 
-                                 for label, score in predictions]
+                                for label, score in predictions]
                 
                 batch_predictions.append(predictions[:k])
             

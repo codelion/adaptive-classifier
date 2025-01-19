@@ -102,6 +102,12 @@ The system combines three key components:
 - safetensors ≥ 0.3.1
 - faiss-cpu ≥ 1.7.4 (or faiss-gpu for GPU support)
 
+## SOTA results on benchmarks with adaptive-classifier
+
+### LLM Router Classifier (Jan 25)
+
+
+
 ## References
 
 - [Transformer^2: Self-adaptive LLMs](https://arxiv.org/abs/2501.06252)

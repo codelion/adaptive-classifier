@@ -96,12 +96,6 @@ def train_classifier(
     classifier = AdaptiveClassifier(
         model_name,
         device="cuda" if torch.cuda.is_available() else "cpu",
-        config={
-            'batch_size': batch_size,
-            'max_examples_per_class': 5000,  # Increased for this task
-            'prototype_update_frequency': 100,
-            'learning_rate': 0.0001  # Lower learning rate for stability
-        }
     )
     
     # Prepare batches
@@ -208,7 +202,7 @@ def evaluate_classifier(
     
     return results
 
-def save_results(results: Dict[str, Any], args: argparse.Namespace):
+def save_results(classifier, results: Dict[str, Any], args: argparse.Namespace):
     """Save evaluation results."""
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -225,6 +219,9 @@ def save_results(results: Dict[str, Any], args: argparse.Namespace):
         'max_samples': args.max_samples,
         'timestamp': timestamp
     }
+
+    # Save classifier
+    classifier.save(args.output_dir)
     
     # Save results
     with open(filepath, 'w') as f:
@@ -267,7 +264,7 @@ def main():
     results = evaluate_classifier(classifier, val_dataset, args.batch_size)
     
     # Save and display results
-    save_results(results, args)
+    save_results(classifier, results, args)
 
 if __name__ == "__main__":
     main()
