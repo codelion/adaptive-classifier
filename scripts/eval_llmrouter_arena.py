@@ -302,8 +302,8 @@ def main():
     args = parser.parse_args()
     
     # Create results directory
-    os.makedirs("results", exist_ok=True)
-    output_file = os.path.join("results", args.output)
+    os.makedirs("benchmark_results", exist_ok=True)
+    output_file = os.path.join("benchmark_results", args.output)
     
     # Create configuration
     config = RouterConfig(
