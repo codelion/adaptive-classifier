@@ -2,7 +2,7 @@ import argparse
 import json
 import logging
 import os
-import time
+import random
 from datetime import datetime
 from typing import Dict, Any, List, Tuple
 
@@ -31,7 +31,7 @@ def setup_args() -> argparse.Namespace:
     parser.add_argument(
         '--model', 
         type=str, 
-        default='bert-base-uncased',
+        default='distilbert/distilbert-base-cased',
         help='Base transformer model to use'
     )
     parser.add_argument(
@@ -43,7 +43,7 @@ def setup_args() -> argparse.Namespace:
     parser.add_argument(
         '--max-samples', 
         type=int, 
-        default=None,
+        default=1200,
         help='Maximum number of samples to use (for testing)'
     )
     parser.add_argument(
@@ -89,79 +89,100 @@ def train_classifier(
     train_dataset: datasets.Dataset,
     batch_size: int
 ) -> AdaptiveClassifier:
-    """Train the adaptive classifier."""
+    """Train the adaptive classifier with improved balancing and configuration."""
     logger.info(f"Initializing classifier with model: {model_name}")
     
-    # Initialize classifier
+    # Count class distribution
+    labels = train_dataset['label']
+    label_counts = {}
+    for label in labels:
+        label_counts[label] = label_counts.get(label, 0) + 1
+    
+    logger.info(f"Original class distribution: {label_counts}")
+    
+    # Calculate class weights
+    total_samples = sum(label_counts.values())
+    class_weights = {
+        label: total_samples / (len(label_counts) * count)
+        for label, count in label_counts.items()
+    }
+    
+    logger.info(f"Class weights: {class_weights}")
+    
+    # Initialize classifier with optimized config
     classifier = AdaptiveClassifier(
         model_name,
         device="cuda" if torch.cuda.is_available() else "cpu",
+        config={
+            'batch_size': batch_size,
+            'max_examples_per_class': 500,  # Reduced to prevent overfitting
+            'prototype_update_frequency': 50,  # More frequent updates
+            'learning_rate': 0.0005,  # Slightly higher learning rate
+            'similarity_threshold': 0.7,  # Increased threshold
+            'prototype_weight': 0.8,  # Give more weight to prototypes
+            'neural_weight': 0.2,  # Less weight to neural network
+        }
     )
     
-    # Prepare batches
+    # Create balanced batches
     texts = train_dataset['text']
-    labels = train_dataset['label']
+    
+    # Group examples by label
+    examples_by_label = {label: [] for label in label_counts.keys()}
+    for text, label in zip(texts, labels):
+        examples_by_label[label].append(text)
+    
+    # Find minority class size
+    min_class_size = min(len(examples) for examples in examples_by_label.values())
+    
+    # Create balanced training data
+    balanced_texts = []
+    balanced_labels = []
+    
+    # Sample equally from each class
+    for label, examples in examples_by_label.items():
+        # Oversample minority class, undersample majority class
+        if len(examples) < min_class_size * 2:
+            # Oversample smaller classes
+            sampled_examples = random.choices(examples, k=min_class_size * 2)
+        else:
+            # Undersample larger classes
+            sampled_examples = random.sample(examples, min_class_size * 2)
+        
+        balanced_texts.extend(sampled_examples)
+        balanced_labels.extend([label] * len(sampled_examples))
+    
+    # Shuffle consistently
+    combined = list(zip(balanced_texts, balanced_labels))
+    random.Random(42).shuffle(combined)
+    balanced_texts, balanced_labels = zip(*combined)
     
     # Process in batches
-    total_batches = (len(texts) + batch_size - 1) // batch_size
+    total_batches = (len(balanced_texts) + batch_size - 1) // batch_size
+    logger.info(f"Total batches: {total_batches}")
     
-    logger.info("Training classifier...")
-    start_time = time.time()
-    
-    for i in tqdm(range(0, len(texts), batch_size), total=total_batches):
+    for i in tqdm(range(0, len(balanced_texts), batch_size), total=total_batches):
         try:
-            batch_texts = texts[i:i + batch_size]
-            batch_labels = labels[i:i + batch_size]
+            batch_texts = balanced_texts[i:i + batch_size]
+            batch_labels = balanced_labels[i:i + batch_size]
             
-            # Debug information before adding examples
-            logger.debug(f"Processing batch {i//batch_size + 1}/{total_batches}")
-            logger.debug(f"Batch size: {len(batch_texts)}")
-            logger.debug(f"Sample text: {batch_texts[0][:100]}...")
-            logger.debug(f"Labels in batch: {set(batch_labels)}")
+            # Debug information
+            if i % (batch_size * 10) == 0:
+                logger.debug(f"Batch {i//batch_size + 1}/{total_batches}")
+                label_counts = {label: batch_labels.count(label) 
+                              for label in set(batch_labels)}
+                logger.debug(f"Batch class distribution: {label_counts}")
             
-            # Try to add examples and catch any errors
-            try:
-                classifier.add_examples(batch_texts, batch_labels)
-            except RuntimeError as e:
-                if "size mismatch" in str(e):
-                    # Print detailed debugging information
-                    logger.error("Size mismatch error occurred!")
-                    logger.error(f"Error message: {str(e)}")
-                    logger.error("\nDebug Information:")
-                    logger.error(f"Batch index: {i}")
-                    logger.error(f"Number of texts: {len(batch_texts)}")
-                    logger.error(f"Number of labels: {len(batch_labels)}")
-                    logger.error(f"Unique labels in batch: {set(batch_labels)}")
-                    logger.error("\nFirst few examples:")
-                    for j in range(min(3, len(batch_texts))):
-                        logger.error(f"Example {j}:")
-                        logger.error(f"Text: {batch_texts[j][:100]}...")
-                        logger.error(f"Label: {batch_labels[j]}")
-                    logger.error("\nClassifier state:")
-                    logger.error(f"Label to ID mapping: {classifier.label_to_id}")
-                    logger.error(f"Number of classes: {len(classifier.label_to_id)}")
-                    raise  # Re-raise the error after logging details
-                else:
-                    raise  # Re-raise other RuntimeErrors
-                    
-            # Log progress periodically
-            if (i // batch_size) % 31 == 0:
-                logger.info(f"Processed {i + len(batch_texts)} examples")
-                memory_stats = classifier.get_memory_stats()
-                logger.info(f"Current memory stats: {memory_stats}")
-                
+            classifier.add_examples(batch_texts, batch_labels)
+            
         except Exception as e:
-            logger.error(f"Error processing batch starting at index {i}")
-            logger.error(f"Error type: {type(e).__name__}")
-            logger.error(f"Error message: {str(e)}")
-            logger.error("\nBatch details:")
-            logger.error(f"Batch size: {len(batch_texts)}")
-            logger.error(f"First text in batch: {batch_texts[0][:100]}...")
-            logger.error(f"Labels in batch: {set(batch_labels)}")
-            raise  # Re-raise the exception after logging details
+            logger.error(f"Error in batch {i//batch_size + 1}")
+            logger.error(str(e))
+            raise
     
-    training_time = time.time() - start_time
-    logger.info(f"Training completed in {training_time:.2f} seconds")
+    # Log final statistics
+    memory_stats = classifier.get_memory_stats()
+    logger.info(f"Final memory stats: {memory_stats}")
     
     return classifier
 

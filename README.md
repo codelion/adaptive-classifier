@@ -106,10 +106,9 @@ The system combines three key components:
 
 ### LLM Router Classifier (Jan 25)
 
-
-
 ## References
 
+- [RouteLLM: Learning to Route LLMs with Preference Data](https://arxiv.org/abs/2406.18665)
 - [Transformer^2: Self-adaptive LLMs](https://arxiv.org/abs/2501.06252)
 - [Lamini Classifier Agent Toolkit](https://www.lamini.ai/blog/classifier-agent-toolkit)
 - [Protoformer: Embedding Prototypes for Transformers](https://arxiv.org/abs/2206.12710)
