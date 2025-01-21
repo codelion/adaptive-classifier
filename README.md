@@ -54,6 +54,14 @@ classifier.save("./my_classifier")
 
 # Load it later
 loaded_classifier = AdaptiveClassifier.load("./my_classifier")
+
+# The library is also integrated with Hugging Face. So you can push and load from HF Hub.
+
+# Save to Hub
+classifier.push_to_hub("username/model-name")
+
+# Load from Hub
+classifier = AdaptiveClassifier.from_pretrained("username/model-name")
 ```
 
 ## Advanced Usage

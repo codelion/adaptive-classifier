@@ -3,13 +3,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from transformers import AutoModel, AutoTokenizer
-from typing import List, Dict, Optional, Tuple, Any, Set
+from typing import List, Dict, Optional, Tuple, Any, Set, Union
 import logging
 import copy
 from pathlib import Path
 from safetensors.torch import save_file, load_file
 import json
 from sklearn.cluster import KMeans
+from huggingface_hub import ModelHubMixin
+import os
+import shutil
 
 from .models import Example, AdaptiveHead, ModelConfig
 from .memory import PrototypeMemory
@@ -18,7 +21,7 @@ from .ewc import EWC
 
 logger = logging.getLogger(__name__)
 
-class AdaptiveClassifier:
+class AdaptiveClassifier(ModelHubMixin):
     """A flexible classifier that can adapt to new classes and examples."""
     
     def __init__(
@@ -284,33 +287,43 @@ class AdaptiveClassifier:
         
         return predictions[:k]
     
-    def save(self, save_dir: str):
-        """Save classifier state with representative examples."""
-        save_dir = Path(save_dir)
-        save_dir.mkdir(parents=True, exist_ok=True)
+    def _save_pretrained(
+        self,
+        save_directory: Union[str, Path],
+        config: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Save the model to a directory.
         
-        # Select representative examples for each class
+        Args:
+            save_directory: Directory to save the model to
+            config: Optional additional configuration
+            **kwargs: Additional arguments passed to save_pretrained
+            
+        Returns:
+            Tuple of (dict of filenames, dict of objects to save)
+        """
+        save_directory = Path(save_directory)
+        os.makedirs(save_directory, exist_ok=True)
+
+        # Save configuration and metadata
+        config_dict = {
+            'model_name': self.model.config._name_or_path,
+            'embedding_dim': self.embedding_dim,
+            'label_to_id': self.label_to_id,
+            'id_to_label': {str(k): v for k, v in self.id_to_label.items()},
+            'train_steps': self.train_steps,
+            'config': self.config.to_dict()
+        }
+
+        # Save examples in a separate file to keep config clean
         saved_examples = {}
         for label, examples in self.memory.examples.items():
             saved_examples[label] = [
                 ex.to_dict() for ex in 
                 self.select_representative_examples(examples, k=5)
             ]
-        
-        # Save configuration and metadata
-        config = {
-            'model_name': self.model.config._name_or_path,
-            'embedding_dim': self.embedding_dim,
-            'label_to_id': self.label_to_id,
-            'id_to_label': {str(k): v for k, v in self.id_to_label.items()},
-            'train_steps': self.train_steps,
-            'config': self.config.to_dict(),
-            'examples': saved_examples
-        }
-        
-        with open(save_dir / 'config.json', 'w') as f:
-            json.dump(config, f)
-        
+
         # Save model tensors
         tensor_dict = {}
         
@@ -322,65 +335,224 @@ class AdaptiveClassifier:
         if self.adaptive_head is not None:
             for name, param in self.adaptive_head.state_dict().items():
                 tensor_dict[f'adaptive_head_{name}'] = param
-        
-        # Save tensors
-        save_file(tensor_dict, save_dir / 'tensors.safetensors')
-    
-    @classmethod
-    def load(cls, save_dir: str, device: Optional[str] = None) -> 'AdaptiveClassifier':
-        """Load classifier with saved examples."""
-        save_dir = Path(save_dir)
-        
-        # Load configuration
-        with open(save_dir / 'config.json', 'r') as f:
-            config = json.load(f)
-        
-        # Initialize classifier
-        classifier = cls(
-            config['model_name'],
-            device=device,
-            config=config.get('config', None)
-        )
-        
-        # Restore label mappings
-        classifier.label_to_id = config['label_to_id']
-        classifier.id_to_label = {
-            int(k): v for k, v in config['id_to_label'].items()
+
+        # Save files
+        config_file = save_directory / "config.json"
+        examples_file = save_directory / "examples.json"
+        tensors_file = save_directory / "model.safetensors"
+
+        with open(config_file, "w", encoding="utf-8") as f:
+            json.dump(config_dict, f, indent=2, sort_keys=True)
+            
+        with open(examples_file, "w", encoding="utf-8") as f:
+            json.dump(saved_examples, f, indent=2, sort_keys=True)
+
+        save_file(tensor_dict, tensors_file)
+
+        # Generate model card if it doesn't exist
+        model_card_path = save_directory / "README.md"
+        if not model_card_path.exists():
+            model_card_content = self._generate_model_card()
+            with open(model_card_path, "w", encoding="utf-8") as f:
+                f.write(model_card_content)
+
+        # Return files that were created
+        saved_files = {
+            "config": config_file.name,
+            "examples": examples_file.name,
+            "model": tensors_file.name,
+            "model_card": model_card_path.name,
         }
-        classifier.train_steps = config['train_steps']
+
+        return saved_files, {}
+
+    @classmethod
+    def _from_pretrained(
+        cls,
+        model_id: Union[str, Path],
+        config: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> "AdaptiveClassifier":
+        """Load a model from the HuggingFace Hub or local directory.
         
+        Args:
+            model_id: HuggingFace Hub model ID or path to local directory
+            config: Optional configuration overrides
+            **kwargs: Additional arguments passed to from_pretrained
+            
+        Returns:
+            Loaded AdaptiveClassifier instance
+        """
+        model_path = Path(model_id)
+
+        # Load configuration
+        with open(model_path / "config.json", "r", encoding="utf-8") as f:
+            config_dict = json.load(f)
+
+        # Load examples
+        with open(model_path / "examples.json", "r", encoding="utf-8") as f:
+            saved_examples = json.load(f)
+
+        # Initialize classifier
+        device = kwargs.get("device", None)
+        classifier = cls(
+            config_dict['model_name'],
+            device=device,
+            config=config_dict.get('config', None)
+        )
+
+        # Restore label mappings
+        classifier.label_to_id = config_dict['label_to_id']
+        classifier.id_to_label = {
+            int(k): v for k, v in config_dict['id_to_label'].items()
+        }
+        classifier.train_steps = config_dict['train_steps']
+
         # Load tensors
-        tensors = load_file(save_dir / 'tensors.safetensors')
-        
+        tensors = load_file(model_path / "model.safetensors")
+
         # Restore saved examples
-        saved_examples = config['examples']
         for label, examples_data in saved_examples.items():
             classifier.memory.examples[label] = [
                 Example.from_dict(ex_data) for ex_data in examples_data
             ]
-        
+
         # Restore prototypes
         for label in classifier.label_to_id.keys():
             prototype_key = f'prototype_{label}'
             if prototype_key in tensors:
                 prototype = tensors[prototype_key]
                 classifier.memory.prototypes[label] = prototype
-        
+
         # Rebuild memory system
         classifier.memory._restore_from_save()
-        
+
         # Restore adaptive head if it exists
         adaptive_head_params = {
             k.replace('adaptive_head_', ''): v 
             for k, v in tensors.items() 
             if k.startswith('adaptive_head_')
         }
-        
+
         if adaptive_head_params:
             classifier._initialize_adaptive_head()
             classifier.adaptive_head.load_state_dict(adaptive_head_params)
-        
+
         return classifier
+
+    def _generate_model_card(self) -> str:
+        """Generate a model card for the classifier.
+        
+        Returns:
+            Model card content as string
+        """
+        stats = self.get_memory_stats()
+        
+        model_card = f"""---
+language: multilingual
+tags:
+- adaptive-classifier
+- text-classification
+- continuous-learning
+license: apache-2.0
+---
+
+# Adaptive Classifier
+
+This model is an instance of an [adaptive-classifier](https://github.com/codelion/adaptive-classifier) that allows for continuous learning and dynamic class addition.
+
+You can install it with `pip install adaptive-classifier`.
+
+## Model Details
+
+- Base Model: {self.model.config._name_or_path}
+- Number of Classes: {stats['num_classes']}
+- Total Examples: {stats['total_examples']}
+- Embedding Dimension: {self.embedding_dim}
+
+## Class Distribution
+
+```
+{self._format_class_distribution(stats)}
+```
+
+## Usage
+
+```python
+from adaptive_classifier import AdaptiveClassifier
+
+# Load the model
+classifier = AdaptiveClassifier.from_pretrained("{self.model.config._name_or_path}")
+
+# Make predictions
+text = "Your text here"
+predictions = classifier.predict(text)
+print(predictions)  # List of (label, confidence) tuples
+
+# Add new examples
+texts = ["Example 1", "Example 2"]
+labels = ["class1", "class2"]
+classifier.add_examples(texts, labels)
+```
+
+## Training Details
+
+- Training Steps: {self.train_steps}
+- Examples per Class: See distribution above
+- Prototype Memory: Active
+- Neural Adaptation: {"Active" if self.adaptive_head is not None else "Inactive"}
+
+## Limitations
+
+This model:
+- Requires at least {self.config.min_examples_per_class} examples per class
+- Has a maximum of {self.config.max_examples_per_class} examples per class
+- Updates prototypes every {self.config.prototype_update_frequency} examples
+
+## Citation
+
+```bibtex
+@software{{adaptive_classifier,
+  title = {{Adaptive Classifier: Dynamic Text Classification with Continuous Learning}},
+  author = {{Sharma, Asankhaya}},
+  year = {{2025}},
+  publisher = {{GitHub}},
+  url = {{https://github.com/codelion/adaptive-classifier}}
+}}
+```
+"""
+        return model_card
+
+    def _format_class_distribution(self, stats: Dict[str, Any]) -> str:
+        """Format class distribution for model card.
+        
+        Args:
+            stats: Statistics from get_memory_stats()
+            
+        Returns:
+            Formatted string of class distribution
+        """
+        if 'examples_per_class' not in stats:
+            return "No examples stored"
+            
+        lines = []
+        total = sum(stats['examples_per_class'].values())
+        
+        for label, count in sorted(stats['examples_per_class'].items()):
+            percentage = (count / total) * 100 if total > 0 else 0
+            lines.append(f"{label}: {count} examples ({percentage:.1f}%)")
+            
+        return "\n".join(lines)
+
+    # Keep existing save/load methods for backwards compatibility
+    def save(self, save_dir: str):
+        """Legacy save method for backwards compatibility."""
+        self._save_pretrained(save_dir)
+
+    @classmethod
+    def load(cls, save_dir: str, device: Optional[str] = None) -> 'AdaptiveClassifier':
+        """Legacy load method for backwards compatibility."""
+        return cls._from_pretrained(save_dir, device=device)
     
     def to(self, device: str) -> 'AdaptiveClassifier':
         """Move the model to specified device.
