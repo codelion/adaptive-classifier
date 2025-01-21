@@ -172,3 +172,4 @@ cython_debug/
 
 **/.DS_store
 demo_classifier/
+scripts/benchmark_results/

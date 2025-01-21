@@ -102,8 +102,40 @@ The system combines three key components:
 - safetensors ≥ 0.3.1
 - faiss-cpu ≥ 1.7.4 (or faiss-gpu for GPU support)
 
+## Benefits of Adaptive Classification in LLM Routing
+
+We evaluate the effectiveness of adaptive classification in optimizing LLM routing decisions. Using the arena-hard-auto-v0.1 dataset with 500 queries, we compared routing performance with and without adaptation while maintaining consistent overall success rates.
+
+### Key Results
+
+| Metric | Without Adaptation | With Adaptation | Impact |
+|--------|-------------------|-----------------|---------|
+| High Model Routes | 113 (22.6%) | 98 (19.6%) | 0.87x |
+| Low Model Routes | 387 (77.4%) | 402 (80.4%) | 1.04x |
+| High Model Success Rate | 40.71% | 29.59% | 0.73x |
+| Low Model Success Rate | 16.54% | 20.15% | 1.22x |
+| Overall Success Rate | 22.00% | 22.00% | 1.00x |
+| Cost Savings* | 25.60% | 32.40% | 1.27x |
+
+*Cost savings calculation assumes high-cost model is 2x the cost of low-cost model
+
+### Analysis
+
+The results highlight several key benefits of adaptive classification:
+
+1. **Improved Cost Efficiency**: While maintaining the same overall success rate (22%), the adaptive classifier achieved 32.40% cost savings compared to 25.60% without adaptation - a relative improvement of 1.27x in cost efficiency.
+
+2. **Better Resource Utilization**: The adaptive system routed more queries to the low-cost model (402 vs 387) while reducing high-cost model usage (98 vs 113), demonstrating better resource allocation.
+
+3. **Learning from Experience**: Through adaptation, the system improved the success rate of low-model routes from 16.54% to 20.15% (1.22x increase), showing effective learning from successful cases.
+
+4. **ROI on Adaptation**: The system adapted to 110 new examples during evaluation, leading to a 6.80% improvement in cost savings while maintaining quality - demonstrating significant return on the adaptation investment.
+
+This real-world evaluation demonstrates that adaptive classification can significantly improve cost efficiency in LLM routing without compromising overall performance.
+
 ## References
 
+- [RouteLLM: Learning to Route LLMs with Preference Data](https://arxiv.org/abs/2406.18665)
 - [Transformer^2: Self-adaptive LLMs](https://arxiv.org/abs/2501.06252)
 - [Lamini Classifier Agent Toolkit](https://www.lamini.ai/blog/classifier-agent-toolkit)
 - [Protoformer: Embedding Prototypes for Transformers](https://arxiv.org/abs/2206.12710)

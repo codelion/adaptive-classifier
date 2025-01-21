@@ -69,14 +69,14 @@ class AdaptiveHead(nn.Module):
         self.model = nn.Sequential(*layers)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Handle both single inputs and batches
+        """Forward pass ensuring consistent output shape."""
+        # Always preserve batch dimension
         if x.dim() == 1:
-            x = x.unsqueeze(0)  # Add batch dimension
+            x = x.unsqueeze(0)  # Add batch dimension [D] -> [1, D]
             
-        output = self.model(x)
+        output = self.model(x)  # Should be [B, C] where B is batch size, C is num_classes
         
-        if output.size(0) == 1:
-            return output.squeeze(0)  # Remove batch dimension for single inputs
+        # Never squeeze output - always return [B, C]
         return output
     
     def update_num_classes(self, num_classes: int):
