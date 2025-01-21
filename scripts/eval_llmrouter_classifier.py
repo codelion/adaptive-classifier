@@ -1,4 +1,5 @@
 import argparse
+import argparse
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ import datasets
 import torch
 from sklearn.metrics import classification_report, confusion_matrix
 from tqdm import tqdm
+from huggingface_hub import HfFolder
 
 from adaptive_classifier import AdaptiveClassifier
 
@@ -51,6 +53,21 @@ def setup_args() -> argparse.Namespace:
         type=str, 
         default='benchmark_results',
         help='Directory to save results'
+    )
+    parser.add_argument(
+        '--push-to-hub',
+        action='store_true',
+        help='Push the trained model to HuggingFace Hub'
+    )
+    parser.add_argument(
+        '--hub-repo',
+        type=str,
+        help='HuggingFace Hub repository ID (e.g. "username/model-name") for pushing the model'
+    )
+    parser.add_argument(
+        '--hub-token',
+        type=str,
+        help='HuggingFace Hub token. If not provided, will look for the token in the environment'
     )
     return parser.parse_args()
 
@@ -223,8 +240,47 @@ def evaluate_classifier(
     
     return results
 
-def save_results(classifier, results: Dict[str, Any], args: argparse.Namespace):
-    """Save evaluation results."""
+def push_to_hub(
+    classifier: AdaptiveClassifier,
+    repo_id: str,
+    token: str = None,
+    metrics: Dict[str, Any] = None
+) -> str:
+    """Push the classifier to HuggingFace Hub.
+    
+    Args:
+        classifier: Trained classifier to push
+        repo_id: HuggingFace Hub repository ID
+        token: HuggingFace Hub token
+        metrics: Optional evaluation metrics to add to model card
+        
+    Returns:
+        URL of the model on the Hub
+    """
+    logger.info(f"Pushing model to HuggingFace Hub: {repo_id}")
+    
+    # Set token if provided
+    if token:
+        HfFolder.save_token(token)
+    
+    try:
+        # Push to hub with evaluation results in model card
+        url = classifier.push_to_hub(
+            repo_id,
+            commit_message="Upload from benchmark script",
+        )
+        logger.info(f"Successfully pushed model to Hub: {url}")
+        return url
+    except Exception as e:
+        logger.error(f"Error pushing to Hub: {str(e)}")
+        raise
+
+def save_results(
+    classifier: AdaptiveClassifier,
+    results: Dict[str, Any],
+    args: argparse.Namespace
+):
+    """Save evaluation results and optionally push to Hub."""
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
@@ -241,14 +297,31 @@ def save_results(classifier, results: Dict[str, Any], args: argparse.Namespace):
         'timestamp': timestamp
     }
 
-    # Save classifier
+    # Save classifier locally
     classifier.save(args.output_dir)
     
-    # Save results
+    # Save results locally
     with open(filepath, 'w') as f:
         json.dump(results, f, indent=2)
     
     logger.info(f"Results saved to {filepath}")
+    
+    # Push to HuggingFace Hub if requested
+    if args.push_to_hub:
+        if not args.hub_repo:
+            raise ValueError("--hub-repo must be specified when using --push-to-hub")
+        
+        hub_url = push_to_hub(
+            classifier,
+            args.hub_repo,
+            args.hub_token,
+            metrics=results['metrics']
+        )
+        results['hub_url'] = hub_url
+        
+        # Update saved results with hub URL
+        with open(filepath, 'w') as f:
+            json.dump(results, f, indent=2)
     
     # Print summary to console
     print("\nEvaluation Results:")
@@ -267,6 +340,9 @@ def save_results(classifier, results: Dict[str, Any], args: argparse.Namespace):
     print("             HIGH  LOW")
     print(f"Actual HIGH  {results['confusion_matrix'][0][0]:4d}  {results['confusion_matrix'][0][1]:4d}")
     print(f"      LOW   {results['confusion_matrix'][1][0]:4d}  {results['confusion_matrix'][1][1]:4d}")
+    
+    if args.push_to_hub:
+        print(f"\nModel pushed to HuggingFace Hub: {results['hub_url']}")
 
 def main():
     """Main execution function."""
