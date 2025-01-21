@@ -482,7 +482,7 @@ You can install it with `pip install adaptive-classifier`.
 from adaptive_classifier import AdaptiveClassifier
 
 # Load the model
-classifier = AdaptiveClassifier.from_pretrained("{self.model.config._name_or_path}")
+classifier = AdaptiveClassifier.from_pretrained("adaptive-classifier/model-name")
 
 # Make predictions
 text = "Your text here"
