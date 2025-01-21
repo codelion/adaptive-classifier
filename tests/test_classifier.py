@@ -74,8 +74,12 @@ def test_save_load(base_classifier, sample_data):
         
         # Save
         base_classifier.save(save_path)
+        
+        # Check all required files exist
         assert (save_path / "config.json").exists()
-        assert (save_path / "tensors.safetensors").exists()
+        assert (save_path / "model.safetensors").exists()
+        assert (save_path / "examples.json").exists()
+        assert (save_path / "README.md").exists()
         
         # Load with same device
         loaded_classifier = AdaptiveClassifier.load(save_path, device=base_classifier.device)
@@ -104,6 +108,16 @@ def test_save_load(base_classifier, sample_data):
             assert label1 == label2, f"Labels don't match: {label1} vs {label2}"
             assert abs(score1 - score2) < score_threshold, \
                 f"Scores differ too much: {score1} vs {score2}"
+
+        # Test memory statistics match
+        original_stats = base_classifier.get_memory_stats()
+        loaded_stats = loaded_classifier.get_memory_stats()
+        
+        assert original_stats['num_classes'] == loaded_stats['num_classes']
+        assert original_stats['total_examples'] == loaded_stats['total_examples']
+        for label in original_stats['examples_per_class']:
+            assert original_stats['examples_per_class'][label] == \
+                   loaded_stats['examples_per_class'][label]
 
 def test_dynamic_class_addition(base_classifier, sample_data):
     texts, labels = sample_data
