@@ -2,6 +2,8 @@
 
 A flexible, adaptive classification system that allows for dynamic addition of new classes and continuous learning from examples. Built on top of transformers from HuggingFace, this library provides an easy-to-use interface for creating and updating text classifiers.
 
+[![GitHub Discussions](https://img.shields.io/github/discussions/codelion/adaptive-classifier)](https://github.com/codelion/adaptive-classifier/discussions)
+
 ## Features
 
 - 🚀 Works with any transformer classifier model
