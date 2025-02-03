@@ -112,11 +112,83 @@ The system combines three key components:
 - safetensors ≥ 0.3.1
 - faiss-cpu ≥ 1.7.4 (or faiss-gpu for GPU support)
 
-## Benefits of Adaptive Classification in LLM Routing
+## Adaptive Classification with LLMs
+
+### LLM Configuration Optimization
+
+The adaptive classifier can also be used to predict optimal configurations for Language Models. Our research shows that model configurations, particularly temperature settings, can significantly impact response quality. Using the adaptive classifier, we can automatically predict the best temperature range for different types of queries:
+
+- **DETERMINISTIC** (T: 0.0-0.1): For queries requiring precise, factual responses
+- **FOCUSED** (T: 0.2-0.5): For structured, technical responses with slight flexibility
+- **BALANCED** (T: 0.6-1.0): For natural, conversational responses
+- **CREATIVE** (T: 1.1-1.5): For more varied and imaginative outputs
+- **EXPERIMENTAL** (T: 1.6-2.0): For maximum variability and unconventional responses
+
+Our evaluation on the LLM Arena dataset demonstrates:
+- 69.8% success rate in finding optimal configurations
+- Consistent response quality (avg. similarity score: 0.64)
+- Balanced distribution across temperature classes, with each class finding its appropriate use cases
+- BALANCED and CREATIVE temperatures producing the most reliable results (scores: 0.649 and 0.645)
+
+This classifier can be used to automatically optimize LLM configurations based on query characteristics, leading to more consistent and higher-quality responses while reducing the need for manual configuration tuning.
+
+```python
+from adaptive_classifier import AdaptiveClassifier
+
+# Load the configuration optimizer
+classifier = AdaptiveClassifier.from_pretrained("adaptive-classifier/llm-config-optimizer")
+
+# Get optimal temperature class for a query
+predictions = classifier.predict("Your query here")
+# Returns: [('BALANCED', 0.85), ('CREATIVE', 0.10), ...]
+```
+
+The classifier continuously learns from new examples, adapting its predictions as it processes more queries and observes their performance.
+
+### LLM Router
+
+The adaptive classifier can be used to intelligently route queries between different LLM models based on query complexity and requirements. The classifier learns to categorize queries into:
+
+- **HIGH**: Complex queries requiring advanced reasoning, multi-step problem solving, or deep expertise. Examples include:
+  - Code generation and debugging
+  - Complex analysis tasks
+  - Multi-step mathematical problems
+  - Technical explanations
+  - Creative writing tasks
+
+- **LOW**: Straightforward queries that can be handled by smaller, faster models. Examples include:
+  - Simple factual questions
+  - Basic clarifications
+  - Formatting tasks
+  - Short definitions
+  - Basic sentiment analysis
+
+The router can be used to optimize costs and latency while maintaining response quality:
+
+```python
+from adaptive_classifier import AdaptiveClassifier
+
+# Load the router classifier
+classifier = AdaptiveClassifier.from_pretrained("adaptive-classifier/llm-router")
+
+# Get routing prediction for a query
+predictions = classifier.predict("Write a function to calculate the Fibonacci sequence")
+# Returns: [('HIGH', 0.92), ('LOW', 0.08)]
+
+# Example routing logic
+def route_query(query: str, classifier: AdaptiveClassifier):
+    predictions = classifier.predict(query)
+    top_class = predictions[0][0]
+    
+    if top_class == 'HIGH':
+        return use_advanced_model(query)  # e.g., GPT-4
+    else:
+        return use_basic_model(query)     # e.g., GPT-3.5-Turbo
+```
 
 We evaluate the effectiveness of adaptive classification in optimizing LLM routing decisions. Using the arena-hard-auto-v0.1 dataset with 500 queries, we compared routing performance with and without adaptation while maintaining consistent overall success rates.
 
-### Key Results
+#### Key Results
 
 | Metric | Without Adaptation | With Adaptation | Impact |
 |--------|-------------------|-----------------|---------|
@@ -129,7 +201,7 @@ We evaluate the effectiveness of adaptive classification in optimizing LLM routi
 
 *Cost savings calculation assumes high-cost model is 2x the cost of low-cost model
 
-### Analysis
+#### Analysis
 
 The results highlight several key benefits of adaptive classification:
 
