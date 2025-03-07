@@ -115,6 +115,56 @@ The system combines three key components:
 
 ## Adaptive Classification with LLMs
 
+### Hallucination Detector
+
+The adaptive classifier can detect hallucinations in language model outputs, especially in Retrieval-Augmented Generation (RAG) scenarios. Despite incorporating external knowledge sources, LLMs often still generate content that isn't supported by the provided context. Our hallucination detector identifies when a model's output contains information that goes beyond what's present in the source material.
+
+The classifier categorizes text into:
+
+- **HALLUCINATED**: Output contains information not supported by or contradictory to the provided context
+- **NOT_HALLUCINATED**: Output is faithfully grounded in the provided context
+
+Our hallucination detector has been trained and evaluated on the RAGTruth benchmark, which provides a standardized dataset for assessing hallucination detection across different task types:
+
+#### Performance Across Tasks
+
+| Task Type      | Precision | Recall | F1 Score |
+|----------------|-----------|--------|----------|
+| QA             | 35.50%    | 45.11% | 39.74%   |
+| Summarization  | 22.18%    | 96.91% | 36.09%   |
+| Data-to-Text   | 65.00%    | 100.0% | 78.79%   |
+| **Overall**    | **40.89%**| **80.68%** | **51.54%** |
+
+The detector shows particularly high recall (80.68% overall), making it effective at catching potential hallucinations, with strong performance on data-to-text generation tasks. The adaptive nature of the classifier means it continues to improve as it processes more examples, making it ideal for production environments where user feedback can be incorporated.
+
+```python
+from adaptive_classifier import AdaptiveClassifier
+
+# Load the hallucination detector
+detector = AdaptiveClassifier.from_pretrained("adaptive-classifier/llm-hallucination-detector")
+
+# Detect hallucinations in RAG output
+context = "France is a country in Western Europe. Its capital is Paris. The population of France is about 67 million people."
+query = "What is the capital of France and its population?"
+response = "The capital of France is Paris. The population is 70 million."
+
+# Format input as expected by the model
+input_text = f"Context: {context}\nQuestion: {query}\nAnswer: {response}"
+
+# Get hallucination prediction
+prediction = detector.predict(input_text)
+# Returns: [('HALLUCINATED', 0.72), ('NOT_HALLUCINATED', 0.28)]
+
+# Example handling logic
+if prediction[0][0] == 'HALLUCINATED' and prediction[0][1] > 0.6:
+    print("Warning: Response may contain hallucinations")
+    # Implement safeguards: request human review, add disclaimer, etc.
+```
+
+This system can be integrated into RAG pipelines as a safety layer, LLM evaluation frameworks, or content moderation systems. The ability to detect hallucinations helps build more trustworthy AI systems, particularly for applications in domains like healthcare, legal, finance, and education where factual accuracy is critical.
+
+The detector can be easily fine-tuned on domain-specific data, making it adaptable to specialized use cases where the definition of hallucination may differ from general contexts.
+
 ### LLM Configuration Optimization
 
 The adaptive classifier can also be used to predict optimal configurations for Language Models. Our research shows that model configurations, particularly temperature settings, can significantly impact response quality. Using the adaptive classifier, we can automatically predict the best temperature range for different types of queries:
@@ -223,6 +273,8 @@ This real-world evaluation demonstrates that adaptive classification can signifi
 - [Lamini Classifier Agent Toolkit](https://www.lamini.ai/blog/classifier-agent-toolkit)
 - [Protoformer: Embedding Prototypes for Transformers](https://arxiv.org/abs/2206.12710)
 - [Overcoming catastrophic forgetting in neural networks](https://arxiv.org/abs/1612.00796)
+- [RAGTruth: A Hallucination Corpus for Developing Trustworthy Retrieval-Augmented Language Models](https://arxiv.org/abs/2401.00396)
+- [LettuceDetect: A Hallucination Detection Framework for RAG Applications](https://arxiv.org/abs/2502.17125)
 
 ## Citation
 
