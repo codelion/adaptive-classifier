@@ -432,7 +432,25 @@ def train_and_evaluate(args):
     # Initialize classifier
     logger.info(f"Initializing adaptive classifier with {args.model_name}")
     
-    config= {'max_length': 1000}
+    config = {
+    # Model configuration parameters
+    'max_length': 2048,  
+    'batch_size': 4,    # Small batch size for better handling of long texts
+
+    # Memory settings (to make adaptive learning more effective)
+    'max_examples_per_class': 100,  # Store many examples per class
+    'prototype_update_frequency': 10, # More frequent updates for small dataset
+    'similarity_threshold': 0.6,     # Balanced threshold for matching
+
+    # Training settings
+    'learning_rate': 2e-5,           # Conservative learning rate for fine-tuning
+    'epochs': 5,                     # Multiple epochs over the small dataset
+    'early_stopping_patience': 2,    # Prevent overfitting
+
+    # Prediction settings  
+    'prototype_weight': 0.7,         # Balance between prototype and neural predictions
+    'neural_weight': 0.3             # As recommended in the paper for established classes
+    }
     classifier = AdaptiveClassifier(args.model_name, config=config)
     
     # Create save directory
