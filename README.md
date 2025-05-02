@@ -281,7 +281,7 @@ This real-world evaluation demonstrates that adaptive classification can signifi
 If you use this library in your research, please cite:
 
 ```bibtex
-@software{adaptive_classifier,
+@software{adaptive-classifier,
   title = {Adaptive Classifier: Dynamic Text Classification with Continuous Learning},
   author = {Asankhaya Sharma},
   year = {2025},
