@@ -10,7 +10,7 @@ from pathlib import Path
 from safetensors.torch import save_file, load_file
 import json
 from sklearn.cluster import KMeans
-from huggingface_hub import ModelHubMixin
+from huggingface_hub import ModelHubMixin, hf_hub_download
 import os
 import shutil
 
@@ -369,21 +369,80 @@ class AdaptiveClassifier(ModelHubMixin):
     @classmethod
     def _from_pretrained(
         cls,
-        model_id: Union[str, Path],
-        config: Optional[Dict[str, Any]] = None,
+        *,
+        model_id: str,
+        revision: Optional[str] = None,
+        cache_dir: Optional[str] = None,
+        force_download: bool = False,
+        proxies: Optional[Dict] = None,
+        resume_download: bool = False,
+        local_files_only: bool = False,
+        token: Optional[Union[str, bool]] = None,
         **kwargs
     ) -> "AdaptiveClassifier":
         """Load a model from the HuggingFace Hub or local directory.
         
         Args:
             model_id: HuggingFace Hub model ID or path to local directory
-            config: Optional configuration overrides
+            revision: Revision of the model on the Hub
+            cache_dir: Cache directory for downloaded models
+            force_download: Force download of models
+            proxies: Proxies to use for downloading
+            resume_download: Resume downloading if interrupted
+            local_files_only: Use local files only, don't download
+            token: Authentication token for Hub
             **kwargs: Additional arguments passed to from_pretrained
             
         Returns:
             Loaded AdaptiveClassifier instance
         """
-        model_path = Path(model_id)
+       
+        # Check if model_id is a local directory
+        if os.path.isdir(model_id):
+            model_path = Path(model_id)
+        else:
+            # Download config file from the Hub
+            try:
+                config_file = hf_hub_download(
+                    repo_id=model_id,
+                    filename="config.json",
+                    revision=revision,
+                    cache_dir=cache_dir,
+                    force_download=force_download,
+                    proxies=proxies,
+                    resume_download=resume_download,
+                    token=token,
+                    local_files_only=local_files_only,
+                )
+                model_path = Path(os.path.dirname(config_file))
+                
+                # Download examples file
+                examples_file = hf_hub_download(
+                    repo_id=model_id,
+                    filename="examples.json",
+                    revision=revision,
+                    cache_dir=cache_dir,
+                    force_download=force_download,
+                    proxies=proxies,
+                    resume_download=resume_download,
+                    token=token,
+                    local_files_only=local_files_only,
+                )
+                
+                # Download model file
+                model_file = hf_hub_download(
+                    repo_id=model_id,
+                    filename="model.safetensors",
+                    revision=revision,
+                    cache_dir=cache_dir,
+                    force_download=force_download,
+                    proxies=proxies,
+                    resume_download=resume_download,
+                    token=token,
+                    local_files_only=local_files_only,
+                )
+            except Exception as e:
+                raise ValueError(f"Error downloading model from {model_id}: {e}")
 
         # Load configuration
         with open(model_path / "config.json", "r", encoding="utf-8") as f:
