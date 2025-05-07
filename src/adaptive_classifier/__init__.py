@@ -1,6 +1,7 @@
 from .classifier import AdaptiveClassifier
 from .models import Example, AdaptiveHead, ModelConfig
 from .memory import PrototypeMemory
+from huggingface_hub import ModelHubMixin
 
 import os
 import re
