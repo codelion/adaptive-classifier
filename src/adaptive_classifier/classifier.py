@@ -369,7 +369,6 @@ class AdaptiveClassifier(ModelHubMixin):
     @classmethod
     def _from_pretrained(
         cls,
-        *,
         model_id: str,
         revision: Optional[str] = None,
         cache_dir: Optional[str] = None,
@@ -398,11 +397,13 @@ class AdaptiveClassifier(ModelHubMixin):
         """
        
         # Check if model_id is a local directory
-        if os.path.isdir(model_id):
-            model_path = Path(model_id)
-        else:
-            # Download config file from the Hub
-            try:
+        model_path = Path(model_id)
+        try:
+            if model_path.is_dir() and (model_path / "config.json").exists():
+                # Local directory with required files
+                pass
+            else:
+                # Download files from HuggingFace Hub
                 config_file = hf_hub_download(
                     repo_id=model_id,
                     filename="config.json",
@@ -417,7 +418,7 @@ class AdaptiveClassifier(ModelHubMixin):
                 model_path = Path(os.path.dirname(config_file))
                 
                 # Download examples file
-                examples_file = hf_hub_download(
+                hf_hub_download(
                     repo_id=model_id,
                     filename="examples.json",
                     revision=revision,
@@ -430,7 +431,7 @@ class AdaptiveClassifier(ModelHubMixin):
                 )
                 
                 # Download model file
-                model_file = hf_hub_download(
+                hf_hub_download(
                     repo_id=model_id,
                     filename="model.safetensors",
                     revision=revision,
@@ -441,8 +442,8 @@ class AdaptiveClassifier(ModelHubMixin):
                     token=token,
                     local_files_only=local_files_only,
                 )
-            except Exception as e:
-                raise ValueError(f"Error downloading model from {model_id}: {e}")
+        except Exception as e:
+            raise ValueError(f"Error loading model from {model_id}: {e}")
 
         # Load configuration
         with open(model_path / "config.json", "r", encoding="utf-8") as f:
@@ -606,12 +607,15 @@ This model:
     # Keep existing save/load methods for backwards compatibility
     def save(self, save_dir: str):
         """Legacy save method for backwards compatibility."""
-        self._save_pretrained(save_dir)
+        return self._save_pretrained(save_dir)
 
     @classmethod
     def load(cls, save_dir: str, device: Optional[str] = None) -> 'AdaptiveClassifier':
         """Legacy load method for backwards compatibility."""
-        return cls._from_pretrained(save_dir, device=device)
+        kwargs = {}
+        if device is not None:
+            kwargs['device'] = device
+        return cls._from_pretrained(save_dir, **kwargs)
     
     def to(self, device: str) -> 'AdaptiveClassifier':
         """Move the model to specified device.
