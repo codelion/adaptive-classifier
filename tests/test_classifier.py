@@ -199,5 +199,28 @@ def test_memory_management(base_classifier, sample_data):
         cleanup_memory = torch.cuda.memory_allocated()
         assert cleanup_memory < final_memory
 
+def test_num_representative_examples(sample_data):
+    # Create a classifier with custom config
+    config = {
+        'num_representative_examples': 2  # Set to keep only 2 example per class
+    }
+    classifier = AdaptiveClassifier("bert-base-uncased", config=config)
+
+    # Add more examples than num_representative_examples
+    texts, labels = sample_data
+    for _ in range(5):
+        classifier.add_examples(texts, labels)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        save_path = Path(tmpdir) / "test_classifier"
+        classifier.save(save_path)
+
+        loaded_classifier = AdaptiveClassifier.load(save_path)
+        assert loaded_classifier.config.num_representative_examples == config['num_representative_examples']
+
+        for label in loaded_classifier.memory.examples:
+            assert len(loaded_classifier.memory.examples[label]) <= config['num_representative_examples'], \
+                f"Class {label} has more than {config['num_representative_examples']} examples"
+
 if __name__ == "__main__":
     pytest.main([__file__])

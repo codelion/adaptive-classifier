@@ -320,8 +320,9 @@ class AdaptiveClassifier(ModelHubMixin):
         saved_examples = {}
         for label, examples in self.memory.examples.items():
             saved_examples[label] = [
-                ex.to_dict() for ex in 
-                self.select_representative_examples(examples, k=5)
+                ex.to_dict() for ex in
+                self.select_representative_examples(
+                    examples, k=self.config.num_representative_examples)
             ]
 
         # Save model tensors
