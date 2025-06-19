@@ -125,21 +125,34 @@ def split_dataset(
     
     return train_texts, test_texts, train_labels, test_labels
 
-def create_strategic_config() -> Dict[str, Any]:
+def create_strategic_config(model_name: str) -> Dict[str, Any]:
     """Create configuration for strategic classification.
+    
+    Args:
+        model_name: Name of the HuggingFace model to get embedding dimension from
     
     Returns:
         Configuration dictionary with strategic settings
     """
-    # ModernBERT-base has 768-dimensional embeddings
-    # Create cost coefficients that match the embedding dimension
-    embedding_dim = 768
+    # Get embedding dimension from the model configuration
+    try:
+        from transformers import AutoConfig
+        model_config = AutoConfig.from_pretrained(model_name)
+        embedding_dim = model_config.hidden_size
+        
+        logger.info(f"Model {model_name} embedding dimension: {embedding_dim}")
+    except Exception as e:
+        logger.error(f"Failed to get embedding dimension for model {model_name}: {e}")
+        raise RuntimeError(f"Could not determine embedding dimension for model {model_name}. "
+                         f"Please ensure the model exists and is accessible.")
+    
+    # Create cost coefficients that match the model's embedding dimension
     cost_coefficients = [0.2] * embedding_dim  # Uniform cost across all dimensions
     
     return {
         'enable_strategic_mode': True,
         'cost_function_type': 'linear',
-        'cost_coefficients': cost_coefficients,  # Match embedding dimension
+        'cost_coefficients': cost_coefficients,  # Match model's embedding dimension
         'strategic_lambda': 0.15,
         'strategic_training_frequency': 5,
         # Blending weights for dual prediction
@@ -393,7 +406,8 @@ def main():
         "--model", 
         type=str, 
         default="answerdotai/ModernBERT-base",
-        help="Model name to use (default: answerdotai/ModernBERT-base)"
+        help="HuggingFace model name to use (default: answerdotai/ModernBERT-base). "
+             "The script automatically adapts to any model's embedding dimension."
     )
     parser.add_argument(
         "--output",
@@ -451,7 +465,7 @@ def main():
         logger.info("TRAINING STRATEGIC CLASSIFIER")
         logger.info("="*60)
         
-        strategic_config = create_strategic_config()
+        strategic_config = create_strategic_config(args.model)
         strategic_classifier = train_classifier(
             args.model, train_texts, train_labels, config=strategic_config
         )
@@ -533,7 +547,7 @@ def main():
             json.dump(serializable_results, f, indent=2, sort_keys=True)
         
         # 9. Print summary
-        logger.info("\n" + "="*60)
+        logger.info("="*60)
         logger.info("EVALUATION SUMMARY")
         logger.info("="*60)
         
@@ -553,7 +567,7 @@ def main():
         logger.info(f"\nTotal Evaluation Time: {total_time:.2f} seconds")
         logger.info(f"Results saved to: {output_path}")
         
-        logger.info("\n" + "="*60)
+        logger.info("="*60)
         logger.info("EVALUATION COMPLETED SUCCESSFULLY")
         logger.info("="*60)
         
