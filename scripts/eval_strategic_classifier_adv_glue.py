@@ -556,15 +556,18 @@ def main():
         logger.info(f"Strategic Classifier (Strategic-only) Accuracy: {strategic_only_results['accuracy']:.4f}")
         logger.info(f"Strategic Classifier (Robust) Accuracy: {robust_results['accuracy']:.4f}")
         
-        logger.info(f"\nAccuracy Improvement: {final_results['comparison']['accuracy_improvement']:.4f}")
+        logger.info("")  # Empty line for spacing
+        logger.info(f"Accuracy Improvement: {final_results['comparison']['accuracy_improvement']:.4f}")
         logger.info(f"F1-score Improvement: {final_results['comparison']['f1_improvement']:.4f}")
         logger.info(f"Relative Accuracy Improvement: {final_results['comparison']['relative_accuracy_improvement']:.4f}")
         
         if robustness_results and 'summary' in robustness_results:
-            logger.info(f"\nStrategic Robustness Score: {robustness_results['summary']['robustness_score']:.4f}")
+            logger.info("")  # Empty line for spacing
+            logger.info(f"Strategic Robustness Score: {robustness_results['summary']['robustness_score']:.4f}")
             logger.info(f"Relative Robustness: {robustness_results['summary']['relative_robustness']:.4f}")
         
-        logger.info(f"\nTotal Evaluation Time: {total_time:.2f} seconds")
+        logger.info("")  # Empty line for spacing
+        logger.info(f"Total Evaluation Time: {total_time:.2f} seconds")
         logger.info(f"Results saved to: {output_path}")
         
         logger.info("="*60)
