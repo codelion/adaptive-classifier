@@ -125,11 +125,12 @@ def split_dataset(
     
     return train_texts, test_texts, train_labels, test_labels
 
-def create_strategic_config(model_name: str) -> Dict[str, Any]:
-    """Create configuration for strategic classification.
+def create_strategic_config(model_name: str, cost_strategy: str = "balanced") -> Dict[str, Any]:
+    """Create configuration for strategic classification with balanced cost functions.
     
     Args:
         model_name: Name of the HuggingFace model to get embedding dimension from
+        cost_strategy: Cost function strategy ('balanced', 'sparse_low', 'uniform_low', 'minimal')
     
     Returns:
         Configuration dictionary with strategic settings
@@ -146,19 +147,74 @@ def create_strategic_config(model_name: str) -> Dict[str, Any]:
         raise RuntimeError(f"Could not determine embedding dimension for model {model_name}. "
                          f"Please ensure the model exists and is accessible.")
     
-    # Create cost coefficients that match the model's embedding dimension
-    cost_coefficients = [0.2] * embedding_dim  # Uniform cost across all dimensions
+    # Create more balanced cost coefficients
+    if cost_strategy == "balanced":
+        # 50% of dimensions manipulable at moderate cost - more realistic
+        manipulable_dims = int(embedding_dim * 0.5)  # 50% of dimensions
+        cost_coefficients = [0.0] * embedding_dim
+        
+        import random
+        random.seed(42)
+        manipulable_indices = random.sample(range(embedding_dim), manipulable_dims)
+        
+        for idx in manipulable_indices:
+            cost_coefficients[idx] = 0.3  # Lower cost for more realistic manipulation
+        
+        logger.info(f"Balanced cost function: {manipulable_dims} manipulable dimensions with cost 0.3")
+        
+    elif cost_strategy == "sparse_low":
+        # Sparse but with lower costs
+        manipulable_dims = int(embedding_dim * 0.2)  # 20% of dimensions
+        cost_coefficients = [0.0] * embedding_dim
+        
+        import random
+        random.seed(42)
+        manipulable_indices = random.sample(range(embedding_dim), manipulable_dims)
+        
+        for idx in manipulable_indices:
+            cost_coefficients[idx] = 0.4  # Moderate cost
+        
+        logger.info(f"Sparse low cost function: {manipulable_dims} manipulable dimensions with cost 0.4")
+        
+    elif cost_strategy == "uniform_low":
+        # Uniform low cost - all dimensions can be modified cheaply
+        cost_coefficients = [0.15] * embedding_dim  # Very low uniform cost
+        
+        logger.info(f"Uniform low cost function: 0.15 across all {embedding_dim} dimensions")
+        
+    elif cost_strategy == "minimal":
+        # Minimal strategic influence for debugging
+        cost_coefficients = [0.05] * embedding_dim  # Minimal cost
+        
+        logger.info(f"Minimal cost function: 0.05 across all {embedding_dim} dimensions")
+        
+    else:
+        # Legacy support for old strategies with lower costs
+        if cost_strategy == "sparse_high":
+            manipulable_dims = int(embedding_dim * 0.3)  # Increased to 30%
+            cost_coefficients = [0.0] * embedding_dim
+            
+            import random
+            random.seed(42)
+            manipulable_indices = random.sample(range(embedding_dim), manipulable_dims)
+            
+            for idx in manipulable_indices:
+                cost_coefficients[idx] = 0.4  # Reduced from 0.8 to 0.4
+            
+            logger.info(f"Sparse high (adjusted) cost function: {manipulable_dims} manipulable dimensions with cost 0.4")
+        else:
+            raise ValueError(f"Unknown cost strategy: {cost_strategy}")
     
     return {
         'enable_strategic_mode': True,
         'cost_function_type': 'linear',
-        'cost_coefficients': cost_coefficients,  # Match model's embedding dimension
-        'strategic_lambda': 0.15,
-        'strategic_training_frequency': 5,
-        # Blending weights for dual prediction
-        'strategic_blend_regular_weight': 0.6,
-        'strategic_blend_strategic_weight': 0.4,
-        # Robust prediction weights (higher prototype weight for robustness)
+        'cost_coefficients': cost_coefficients,
+        'strategic_lambda': 0.05,  # Much lower strategic weight
+        'strategic_training_frequency': 10,  # Less frequent strategic training
+        # More conservative blending - favor regular component
+        'strategic_blend_regular_weight': 0.7,  # Increased regular weight
+        'strategic_blend_strategic_weight': 0.3,  # Decreased strategic weight
+        # Robust prediction weights
         'strategic_robust_proto_weight': 0.8,
         'strategic_robust_head_weight': 0.2,
         # Strategic prediction weights
@@ -410,6 +466,18 @@ def main():
              "The script automatically adapts to any model's embedding dimension."
     )
     parser.add_argument(
+        "--cost-strategy",
+        type=str,
+        default="balanced",
+        choices=["balanced", "sparse_low", "uniform_low", "minimal", "sparse_high"],
+        help="Strategic cost function strategy. Options: "
+             "'balanced' (50%% manipulable dims, cost 0.3), "
+             "'sparse_low' (20%% manipulable dims, cost 0.4), "
+             "'uniform_low' (all dims, cost 0.15), "
+             "'minimal' (all dims, cost 0.05 - for debugging), "
+             "'sparse_high' (legacy - adjusted to be less restrictive)"
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default="strategic_classifier_evaluation_results.json",
@@ -436,6 +504,7 @@ def main():
     # Start evaluation
     logger.info("Starting Strategic Classifier Evaluation")
     logger.info(f"Model: {args.model}")
+    logger.info(f"Cost strategy: {args.cost_strategy}")
     logger.info(f"Output file: {args.output}")
     logger.info(f"Test size: {args.test_size}")
     logger.info(f"Random seed: {args.seed}")
@@ -465,7 +534,7 @@ def main():
         logger.info("TRAINING STRATEGIC CLASSIFIER")
         logger.info("="*60)
         
-        strategic_config = create_strategic_config(args.model)
+        strategic_config = create_strategic_config(args.model, args.cost_strategy)
         strategic_classifier = train_classifier(
             args.model, train_texts, train_labels, config=strategic_config
         )
@@ -535,7 +604,8 @@ def main():
                 'relative_accuracy_improvement': (strategic_dual_results['accuracy'] - regular_results['accuracy']) / regular_results['accuracy'] if regular_results['accuracy'] > 0 else 0.0
             },
             'config': {
-                'strategic_config': strategic_config
+                'strategic_config': strategic_config,
+                'cost_strategy': args.cost_strategy
             }
         }
         
