@@ -12,6 +12,7 @@ A flexible, adaptive classification system that allows for dynamic addition of n
 - 💾 Safe and efficient state persistence
 - 🔄 Prototype-based learning
 - 🧠 Neural adaptation layer
+- 🛡️ Strategic classification robustness
 
 ## Try Now
 
@@ -95,15 +96,57 @@ more_labels = ["positive"] * 2
 classifier.add_examples(more_examples, more_labels)
 ```
 
+### Strategic Classification (Anti-Gaming)
+
+```python
+# Enable strategic mode to defend against adversarial inputs
+config = {
+    'enable_strategic_mode': True,
+    'cost_function_type': 'linear',
+    'cost_coefficients': {
+        'sentiment_words': 0.5,    # Cost to change sentiment-bearing words
+        'length_change': 0.1,      # Cost to modify text length
+        'word_substitution': 0.3   # Cost to substitute words
+    },
+    'strategic_blend_regular_weight': 0.6,   # Weight for regular predictions
+    'strategic_blend_strategic_weight': 0.4  # Weight for strategic predictions
+}
+
+classifier = AdaptiveClassifier("bert-base-uncased", config=config)
+classifier.add_examples(texts, labels)
+
+# Robust predictions that consider potential manipulation
+text = "This product has amazing quality features!"
+
+# Dual prediction (automatic blend of regular + strategic)
+predictions = classifier.predict(text)
+
+# Pure strategic prediction (simulates adversarial manipulation)
+strategic_preds = classifier.predict_strategic(text)
+
+# Robust prediction (assumes input may already be manipulated)
+robust_preds = classifier.predict_robust(text)
+
+print(f"Dual: {predictions}")
+print(f"Strategic: {strategic_preds}")
+print(f"Robust: {robust_preds}")
+```
+
 ## How It Works
 
-The system combines three key components:
+The system combines four key components:
 
 1. **Transformer Embeddings**: Uses state-of-the-art language models for text representation
 
 2. **Prototype Memory**: Maintains class prototypes for quick adaptation to new examples
 
 3. **Adaptive Neural Layer**: Learns refined decision boundaries through continuous training
+
+4. **Strategic Classification**: Defends against adversarial manipulation using game-theoretic principles. When strategic mode is enabled, the system:
+   - Models potential strategic behavior of users trying to game the classifier
+   - Uses cost functions to represent the difficulty of manipulating different features
+   - Combines regular predictions with strategic-aware predictions for robustness
+   - Provides multiple prediction modes: dual (blended), strategic (simulates manipulation), and robust (anti-manipulation)
 
 ## Requirements
 
@@ -268,6 +311,7 @@ This real-world evaluation demonstrates that adaptive classification can signifi
 
 ## References
 
+- [Strategic Classification](https://arxiv.org/abs/1506.06980)
 - [RouteLLM: Learning to Route LLMs with Preference Data](https://arxiv.org/abs/2406.18665)
 - [Transformer^2: Self-adaptive LLMs](https://arxiv.org/abs/2501.06252)
 - [Lamini Classifier Agent Toolkit](https://www.lamini.ai/blog/classifier-agent-toolkit)

@@ -28,6 +28,7 @@ class PrototypeMemory:
         # Initialize storage
         self.examples = defaultdict(list)  # label -> List[Example]
         self.prototypes = {}  # label -> tensor
+        self.strategic_prototypes = {}  # label -> strategic prototype tensor
         
         # Initialize FAISS index for fast similarity search
         self.index = faiss.IndexFlatL2(embedding_dim)
@@ -242,3 +243,53 @@ class PrototypeMemory:
         self.label_to_index.clear()
         self.index_to_label.clear()
         self.updates_since_rebuild = 0
+    
+    def compute_strategic_prototypes(self, cost_function, classifier_func):
+        """Compute strategic prototypes for all classes.
+        
+        Args:
+            cost_function: Strategic cost function
+            classifier_func: Current classifier function
+        """
+        for label, examples in self.examples.items():
+            if examples:
+                strategic_embeddings = []
+                
+                for example in examples:
+                    # Compute where this example would strategically move
+                    strategic_embedding = cost_function.compute_best_response(
+                        example.embedding, classifier_func
+                    )
+                    strategic_embeddings.append(strategic_embedding)
+                
+                # Compute mean of strategic embeddings
+                if strategic_embeddings:
+                    strategic_prototype = torch.stack(strategic_embeddings).mean(dim=0)
+                    self.strategic_prototypes[label] = strategic_prototype
+    
+    def get_strategic_prototypes(self, query_embedding: torch.Tensor, k: int = 5) -> List[Tuple[str, float]]:
+        """Get nearest strategic prototypes.
+        
+        Args:
+            query_embedding: Query embedding tensor
+            k: Number of neighbors to return
+            
+        Returns:
+            List of (label, similarity) tuples
+        """
+        if not self.strategic_prototypes:
+            return self.get_nearest_prototypes(query_embedding, k)
+        
+        # Compute similarities to strategic prototypes
+        similarities = []
+        for label, prototype in self.strategic_prototypes.items():
+            # Compute cosine similarity
+            sim = F.cosine_similarity(
+                query_embedding.unsqueeze(0), 
+                prototype.unsqueeze(0)
+            ).item()
+            similarities.append((label, sim))
+        
+        # Sort by similarity and return top k
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        return similarities[:k]

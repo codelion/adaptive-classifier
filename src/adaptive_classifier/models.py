@@ -138,6 +138,21 @@ class ModelConfig:
         self.quantization = self.config.get('quantization', None)
         self.gradient_checkpointing = self.config.get('gradient_checkpointing', False)
         
+        # Strategic classification settings
+        self.enable_strategic_mode = self.config.get('enable_strategic_mode', False)
+        self.cost_function_type = self.config.get('cost_function_type', 'separable')
+        self.strategic_lambda = self.config.get('strategic_lambda', 0.1)
+        self.cost_coefficients = self.config.get('cost_coefficients', {})
+        self.strategic_training_frequency = self.config.get('strategic_training_frequency', 10)
+        
+        # Strategic prediction blending weights
+        self.strategic_blend_regular_weight = self.config.get('strategic_blend_regular_weight', 0.6)
+        self.strategic_blend_strategic_weight = self.config.get('strategic_blend_strategic_weight', 0.4)
+        self.strategic_robust_proto_weight = self.config.get('strategic_robust_proto_weight', 0.8)
+        self.strategic_robust_head_weight = self.config.get('strategic_robust_head_weight', 0.2)
+        self.strategic_prediction_proto_weight = self.config.get('strategic_prediction_proto_weight', 0.5)
+        self.strategic_prediction_head_weight = self.config.get('strategic_prediction_head_weight', 0.5)
+        
     def update(self, **kwargs):
         """Update configuration parameters."""
         for key, value in kwargs.items():
@@ -166,5 +181,16 @@ class ModelConfig:
             'min_confidence': self.min_confidence,
             'device_map': self.device_map,
             'quantization': self.quantization,
-            'gradient_checkpointing': self.gradient_checkpointing
+            'gradient_checkpointing': self.gradient_checkpointing,
+            'enable_strategic_mode': self.enable_strategic_mode,
+            'cost_function_type': self.cost_function_type,
+            'strategic_lambda': self.strategic_lambda,
+            'cost_coefficients': self.cost_coefficients,
+            'strategic_training_frequency': self.strategic_training_frequency,
+            'strategic_blend_regular_weight': self.strategic_blend_regular_weight,
+            'strategic_blend_strategic_weight': self.strategic_blend_strategic_weight,
+            'strategic_robust_proto_weight': self.strategic_robust_proto_weight,
+            'strategic_robust_head_weight': self.strategic_robust_head_weight,
+            'strategic_prediction_proto_weight': self.strategic_prediction_proto_weight,
+            'strategic_prediction_head_weight': self.strategic_prediction_head_weight
         }
