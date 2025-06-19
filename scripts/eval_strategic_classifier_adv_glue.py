@@ -32,6 +32,23 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support, con
 
 from adaptive_classifier import AdaptiveClassifier
 
+def convert_to_serializable(obj):
+    """Convert numpy/torch types to JSON serializable types."""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, torch.Tensor):
+        return obj.detach().cpu().numpy().tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_to_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_serializable(item) for item in obj]
+    else:
+        return obj
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -114,15 +131,15 @@ def create_strategic_config() -> Dict[str, Any]:
     Returns:
         Configuration dictionary with strategic settings
     """
+    # ModernBERT-base has 768-dimensional embeddings
+    # Create cost coefficients that match the embedding dimension
+    embedding_dim = 768
+    cost_coefficients = [0.2] * embedding_dim  # Uniform cost across all dimensions
+    
     return {
         'enable_strategic_mode': True,
         'cost_function_type': 'linear',
-        'cost_coefficients': {
-            'sentiment': 0.3,      # Cost to change sentiment words
-            'length': 0.1,         # Cost to change text length
-            'complexity': 0.2,     # Cost to change text complexity
-            'adversarial': 0.5     # Cost for adversarial modifications
-        },
+        'cost_coefficients': cost_coefficients,  # Match embedding dimension
         'strategic_lambda': 0.15,
         'strategic_training_frequency': 5,
         # Blending weights for dual prediction
@@ -158,6 +175,24 @@ def train_classifier(
     
     # Initialize classifier
     classifier = AdaptiveClassifier(model_name, config=config)
+    
+    # Debug: Check if strategic mode is properly enabled
+    if config and config.get('enable_strategic_mode'):
+        logger.info(f"Strategic mode enabled: {classifier.strategic_mode}")
+        logger.info(f"Strategic cost function: {classifier.strategic_cost_function is not None}")
+        logger.info(f"Strategic optimizer: {classifier.strategic_optimizer is not None}")
+        
+        # If strategic mode failed to initialize, this is a critical error
+        if not classifier.strategic_mode:
+            error_msg = (
+                f"CRITICAL ERROR: Strategic mode failed to initialize!\n"
+                f"Config cost_coefficients: {config.get('cost_coefficients')}\n"
+                f"Config cost_function_type: {config.get('cost_function_type')}\n"
+                f"Strategic mode is required for this evaluation. "
+                f"Please fix the strategic classifier implementation."
+            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
     
     # Add training examples in batches for better performance
     batch_size = 50
@@ -303,8 +338,8 @@ def evaluate_strategic_robustness(
         Dictionary of robustness metrics
     """
     if not strategic_classifier.strategic_mode:
-        logger.warning("Strategic mode not enabled, skipping robustness evaluation")
-        return {}
+        logger.error("Strategic mode not enabled - cannot evaluate robustness")
+        raise RuntimeError("Strategic mode not enabled - cannot evaluate robustness")
     
     logger.info("Evaluating strategic robustness...")
     
@@ -403,7 +438,7 @@ def main():
         )
         
         # 3. Train regular classifier
-        logger.info("\n" + "="*60)
+        logger.info("="*60)
         logger.info("TRAINING REGULAR CLASSIFIER")
         logger.info("="*60)
         
@@ -412,7 +447,7 @@ def main():
         )
         
         # 4. Train strategic classifier
-        logger.info("\n" + "="*60)
+        logger.info("="*60)
         logger.info("TRAINING STRATEGIC CLASSIFIER")
         logger.info("="*60)
         
@@ -421,8 +456,12 @@ def main():
             args.model, train_texts, train_labels, config=strategic_config
         )
         
+        # Strategic mode must be enabled for this evaluation
+        if not strategic_classifier.strategic_mode:
+            raise RuntimeError("Strategic mode failed to initialize. Cannot proceed with strategic evaluation.")
+        
         # 5. Evaluate both classifiers
-        logger.info("\n" + "="*60)
+        logger.info("="*60)
         logger.info("EVALUATION PHASE")
         logger.info("="*60)
         
@@ -488,8 +527,10 @@ def main():
         
         # 8. Save results
         output_path = Path(args.output)
+        # Convert all numpy/torch types to JSON serializable types
+        serializable_results = convert_to_serializable(final_results)
         with open(output_path, 'w') as f:
-            json.dump(final_results, f, indent=2, sort_keys=True)
+            json.dump(serializable_results, f, indent=2, sort_keys=True)
         
         # 9. Print summary
         logger.info("\n" + "="*60)
@@ -505,7 +546,7 @@ def main():
         logger.info(f"F1-score Improvement: {final_results['comparison']['f1_improvement']:.4f}")
         logger.info(f"Relative Accuracy Improvement: {final_results['comparison']['relative_accuracy_improvement']:.4f}")
         
-        if robustness_results:
+        if robustness_results and 'summary' in robustness_results:
             logger.info(f"\nStrategic Robustness Score: {robustness_results['summary']['robustness_score']:.4f}")
             logger.info(f"Relative Robustness: {robustness_results['summary']['relative_robustness']:.4f}")
         
