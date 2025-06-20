@@ -160,49 +160,29 @@ The system combines four key components:
 
 ### Strategic Classification Evaluation
 
-We evaluated the strategic classification feature using the [AI-Secure/adv_glue](https://huggingface.co/datasets/AI-Secure/adv_glue) dataset, specifically the `adv_sst2` subset, which contains adversarially-modified sentiment analysis examples designed to test robustness against strategic manipulation.
+We evaluated the strategic classification feature using the [AI-Secure/adv_glue](https://huggingface.co/datasets/AI-Secure/adv_glue) dataset's `adv_sst2` subset, which contains adversarially-modified sentiment analysis examples designed to test robustness against strategic manipulation.
 
-#### How Strategic Classification Works
+#### Testing Setup
+- **Dataset**: 148 adversarial text samples (70% train / 30% test)
+- **Task**: Binary sentiment classification (positive/negative) 
+- **Model**: answerdotai/ModernBERT-base with linear cost function
+- **Modes**: Regular, Dual (60%/40% blend), Strategic, and Robust prediction modes
 
-Strategic classification defends against adversarial manipulation by anticipating how users might try to game the system. During training, it learns to:
-
-1. **Model Strategic Behavior**: Simulate how adversaries might modify inputs to get desired classifications
-2. **Learn Robust Features**: Focus on features that are harder to manipulate
-3. **Blend Predictions**: Combine regular predictions with strategic-aware predictions for robustness
-
-The system provides multiple prediction modes:
-- **Dual**: Blended regular + strategic predictions (default when strategic mode enabled)
-- **Strategic**: Pure strategic predictions simulating adversarial manipulation
-- **Robust**: Anti-manipulation predictions assuming input is already modified
-
-#### Evaluation Results
-
-**Dataset**: 148 adversarial examples, 70/30 train/test split
-**Model**: answerdotai/ModernBERT-base
-**Task**: Binary sentiment classification (positive/negative)
+#### Results Comparison
 
 | Scenario | Regular Classifier | Strategic Classifier | Advantage |
 |----------|-------------------|---------------------|----------|
 | Clean Data | 80.00% | 77.78% | -2.22% |
 | **Under Attack** | **64.44%** | **77.78%** | **+13.33%** |
+| **Robustness Drop** | **-15.56%** | **0.00%** | **+15.56%** |
 
-#### Key Results
+#### Key Insights
 
-**🎯 Robustness Under Attack**: When facing adversarial examples, the strategic classifier maintains 77.78% accuracy while the regular classifier drops to 64.44% - a **13.33% robustness advantage**.
+**Strategic Training Success**: The strategic classifier maintains consistent performance (77.78%) whether facing clean or manipulated data, while the regular classifier drops significantly under attack.
 
-**💡 Strategic Trade-off**: The system sacrifices 2.22% accuracy on clean data to gain 13.33% robustness under attack - a **6:1 return on investment**.
+**Performance Trade-off**: Sacrifices 2.22% on clean data to gain 13.33% robustness under adversarial conditions - demonstrating effective strategic defense.
 
-**🛡️ Consistent Defense**: The strategic classifier maintains nearly identical performance whether data is clean or manipulated, demonstrating effective adversarial robustness.
-
-#### When to Use Strategic Classification
-
-Strategic classification is ideal for applications where:
-- **Users might game the system**: Review manipulation, survey responses, content moderation
-- **Adversarial robustness is critical**: Spam detection, fraud detection, security applications
-- **Consistent performance matters**: Scenarios where you need reliable performance regardless of input manipulation
-- **Attack scenarios are likely**: Any system where users have incentives to manipulate classifications
-
-**Bottom Line**: Strategic classification successfully provides significant robustness against adversarial manipulation while maintaining competitive clean-data performance.
+**Use Cases**: Recommended for applications where adversarial robustness is critical (content moderation, spam detection, fraud prevention) and consistent performance under attack is more valuable than peak clean-data performance.
 
 ### Hallucination Detector
 
