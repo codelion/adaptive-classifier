@@ -629,13 +629,13 @@ def evaluate_strategic_robustness(
     
     return robustness_results
 
-def evaluate_fair_comparison(
+def evaluate_comparison_on_manipulated_data(
     regular_classifier: AdaptiveClassifier,
     strategic_classifier: AdaptiveClassifier,
     test_texts: List[str],
     test_labels: List[str]
 ) -> Dict[str, Any]:
-    """Perform fair comparison by evaluating both classifiers on manipulated data.
+    """Perform comparison by evaluating both classifiers on manipulated data.
     
     Args:
         regular_classifier: Regular classifier (no strategic training)
@@ -644,7 +644,7 @@ def evaluate_fair_comparison(
         test_labels: Test labels
         
     Returns:
-        Dictionary with fair comparison results
+        Dictionary with comparison results
     """
     logger.info("="*60)
     logger.info("EVALUATION ON MANIPULATED DATA")
@@ -674,7 +674,7 @@ def evaluate_fair_comparison(
     return {
         'regular_on_manipulated': regular_on_manipulated,
         'strategic_on_manipulated': strategic_on_manipulated,
-        'fair_comparison': {
+        'comparison': {
             'accuracy_improvement': accuracy_improvement,
             'f1_improvement': f1_improvement,
             'relative_accuracy_improvement': accuracy_improvement / regular_on_manipulated['accuracy'] if regular_on_manipulated['accuracy'] > 0 else 0.0
@@ -791,8 +791,8 @@ def main():
             strategic_classifier, test_texts, test_labels, mode="robust"
         )
         
-        # 6. Perform fair comparison on manipulated data
-        fair_comparison_results = evaluate_fair_comparison(
+        # 6. Perform comparison on manipulated data
+        comparison_results = evaluate_comparison_on_manipulated_data(
             regular_classifier, strategic_classifier, test_texts, test_labels
         )
         
