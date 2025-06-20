@@ -132,9 +132,11 @@ print(f"Strategic: {strategic_preds}")
 print(f"Robust: {robust_preds}")
 ```
 
-## How It Works
+## Architecture Overview
 
-The system combines four key components:
+The Adaptive Classifier combines four key components in a unified architecture:
+
+![Adaptive Classifier Architecture](docs/images/architecture_diagram.svg)
 
 1. **Transformer Embeddings**: Uses state-of-the-art language models for text representation
 
@@ -147,6 +149,32 @@ The system combines four key components:
    - Uses cost functions to represent the difficulty of manipulating different features
    - Combines regular predictions with strategic-aware predictions for robustness
    - Provides multiple prediction modes: dual (blended), strategic (simulates manipulation), and robust (anti-manipulation)
+
+## Why Adaptive Classification?
+
+Traditional classification approaches face significant limitations when dealing with evolving requirements and adversarial environments:
+
+![Traditional vs Adaptive Classification](docs/images/comparison_traditional_vs_adaptive.svg)
+
+The Adaptive Classifier overcomes these limitations through:
+- **Dynamic class addition** without full retraining
+- **Strategic robustness** against adversarial manipulation
+- **Memory-efficient prototypes** with FAISS optimization
+- **Zero downtime updates** for production systems
+- **Game-theoretic defense** mechanisms
+
+## Continuous Learning Process
+
+The system evolves through distinct phases, each building upon previous knowledge without catastrophic forgetting:
+
+![Continuous Learning Workflow](docs/images/continuous_learning_workflow.svg)
+
+The learning process includes:
+- **Initial Training**: Bootstrap with basic classes
+- **Dynamic Addition**: Seamlessly add new classes as they emerge
+- **Continuous Learning**: Refine decision boundaries with EWC protection
+- **Strategic Enhancement**: Develop robustness against manipulation
+- **Production Deployment**: Full capability with ongoing adaptation
 
 ## Requirements
 
