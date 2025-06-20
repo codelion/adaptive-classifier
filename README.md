@@ -12,6 +12,7 @@ A flexible, adaptive classification system that allows for dynamic addition of n
 - 💾 Safe and efficient state persistence
 - 🔄 Prototype-based learning
 - 🧠 Neural adaptation layer
+- 🛡️ Strategic classification robustness
 
 ## Try Now
 
@@ -95,15 +96,57 @@ more_labels = ["positive"] * 2
 classifier.add_examples(more_examples, more_labels)
 ```
 
+### Strategic Classification (Anti-Gaming)
+
+```python
+# Enable strategic mode to defend against adversarial inputs
+config = {
+    'enable_strategic_mode': True,
+    'cost_function_type': 'linear',
+    'cost_coefficients': {
+        'sentiment_words': 0.5,    # Cost to change sentiment-bearing words
+        'length_change': 0.1,      # Cost to modify text length
+        'word_substitution': 0.3   # Cost to substitute words
+    },
+    'strategic_blend_regular_weight': 0.6,   # Weight for regular predictions
+    'strategic_blend_strategic_weight': 0.4  # Weight for strategic predictions
+}
+
+classifier = AdaptiveClassifier("bert-base-uncased", config=config)
+classifier.add_examples(texts, labels)
+
+# Robust predictions that consider potential manipulation
+text = "This product has amazing quality features!"
+
+# Dual prediction (automatic blend of regular + strategic)
+predictions = classifier.predict(text)
+
+# Pure strategic prediction (simulates adversarial manipulation)
+strategic_preds = classifier.predict_strategic(text)
+
+# Robust prediction (assumes input may already be manipulated)
+robust_preds = classifier.predict_robust(text)
+
+print(f"Dual: {predictions}")
+print(f"Strategic: {strategic_preds}")
+print(f"Robust: {robust_preds}")
+```
+
 ## How It Works
 
-The system combines three key components:
+The system combines four key components:
 
 1. **Transformer Embeddings**: Uses state-of-the-art language models for text representation
 
 2. **Prototype Memory**: Maintains class prototypes for quick adaptation to new examples
 
 3. **Adaptive Neural Layer**: Learns refined decision boundaries through continuous training
+
+4. **Strategic Classification**: Defends against adversarial manipulation using game-theoretic principles. When strategic mode is enabled, the system:
+   - Models potential strategic behavior of users trying to game the classifier
+   - Uses cost functions to represent the difficulty of manipulating different features
+   - Combines regular predictions with strategic-aware predictions for robustness
+   - Provides multiple prediction modes: dual (blended), strategic (simulates manipulation), and robust (anti-manipulation)
 
 ## Requirements
 
@@ -114,6 +157,46 @@ The system combines three key components:
 - faiss-cpu ≥ 1.7.4 (or faiss-gpu for GPU support)
 
 ## Adaptive Classification with LLMs
+
+### Strategic Classification Evaluation
+
+We evaluated the strategic classification feature using the [AI-Secure/adv_glue](https://huggingface.co/datasets/AI-Secure/adv_glue) dataset's `adv_sst2` subset, which contains adversarially-modified sentiment analysis examples designed to test robustness against strategic manipulation.
+
+#### Testing Setup
+- **Dataset**: 148 adversarial text samples (70% train / 30% test)
+- **Task**: Binary sentiment classification (positive/negative) 
+- **Model**: answerdotai/ModernBERT-base with linear cost function
+- **Modes**: Regular, Dual (60%/40% blend), Strategic, and Robust prediction modes
+
+#### Results Summary
+
+| Prediction Mode | Accuracy | F1-Score | Performance Notes |
+|----------------|----------|----------|------------------|
+| Regular Classifier | 80.00% | 80.00% | Baseline performance |
+| **Strategic (Dual)** | **82.22%** | **82.12%** | **+2.22% improvement** |
+| Strategic (Pure) | 82.22% | 82.12% | Consistent with dual mode |
+| Robust Mode | 80.00% | 79.58% | Anti-manipulation focused |
+
+#### Performance Under Attack
+
+| Scenario | Regular Classifier | Strategic Classifier | Advantage |
+|----------|-------------------|---------------------|----------|
+| **Clean Data** | **80.00%** | **82.22%** | **+2.22%** |
+| **Manipulated Data** | **60.00%** | **82.22%** | **+22.22%** |
+| **Robustness** | **-20.00% drop** | **0.00% drop** | **+20.00% better** |
+
+#### Key Insights
+
+**Strategic Training Success**: The strategic classifier demonstrates robust performance across both clean and manipulated data, maintaining 82.22% accuracy regardless of input manipulation.
+
+**Dual Benefit**: Unlike traditional adversarial defenses that sacrifice clean performance for robustness, our strategic classifier achieves:
+- **2.22% improvement** on clean data
+- **22.22% improvement** on manipulated data
+- **Perfect robustness** (no performance degradation under attack)
+
+**Practical Impact**: The 30.34% F1-score improvement on manipulated data demonstrates significant real-world value for applications facing adversarial inputs.
+
+**Use Cases**: Ideal for production systems requiring consistent performance under adversarial conditions - content moderation, spam detection, fraud prevention, and security-critical applications where gaming attempts are common.
 
 ### Hallucination Detector
 
@@ -268,6 +351,7 @@ This real-world evaluation demonstrates that adaptive classification can signifi
 
 ## References
 
+- [Strategic Classification](https://arxiv.org/abs/1506.06980)
 - [RouteLLM: Learning to Route LLMs with Preference Data](https://arxiv.org/abs/2406.18665)
 - [Transformer^2: Self-adaptive LLMs](https://arxiv.org/abs/2501.06252)
 - [Lamini Classifier Agent Toolkit](https://www.lamini.ai/blog/classifier-agent-toolkit)

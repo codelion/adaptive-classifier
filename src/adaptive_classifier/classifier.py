@@ -17,6 +17,9 @@ import shutil
 from .models import Example, AdaptiveHead, ModelConfig
 from .memory import PrototypeMemory
 from .ewc import EWC
+from .strategic import (
+    StrategicCostFunction, CostFunctionFactory, StrategicOptimizer, StrategicEvaluator
+)
 
 
 logger = logging.getLogger(__name__)
@@ -63,6 +66,15 @@ class AdaptiveClassifier(ModelHubMixin):
         
         # Statistics
         self.train_steps = 0
+        
+        # Strategic classification components
+        self.strategic_cost_function = None
+        self.strategic_optimizer = None
+        self.strategic_evaluator = None
+        
+        # Initialize strategic components if enabled
+        if self.config.enable_strategic_mode:
+            self._initialize_strategic_components()
     
     def add_examples(self, texts: List[str], labels: List[str]):
         """Add new examples with special handling for new classes."""
@@ -102,6 +114,10 @@ class AdaptiveClassifier(ModelHubMixin):
         else:
             # Regular training for existing classes
             self._train_adaptive_head()
+            
+            # Strategic training step if enabled
+            if self.strategic_mode and self.train_steps % self.config.strategic_training_frequency == 0:
+                self._perform_strategic_training()
     
     def _train_new_classes(self, old_head: Optional[nn.Module], new_classes: Set[str]):
         """Train the model with focus on new classes while preserving old class knowledge."""
@@ -224,11 +240,54 @@ class AdaptiveClassifier(ModelHubMixin):
         
         self.train_steps += 1
     
+    def _perform_strategic_training(self):
+        """Perform strategic training on current examples."""
+        if not self.strategic_mode or not self.memory.examples:
+            return
+        
+        # Prepare training data
+        all_embeddings = []
+        all_labels = []
+        
+        for label in self.memory.examples:
+            for example in self.memory.examples[label]:
+                all_embeddings.append(example.embedding)
+                all_labels.append(self.label_to_id[label])
+        
+        if all_embeddings:
+            all_embeddings = torch.stack(all_embeddings)
+            all_labels = torch.tensor(all_labels, dtype=torch.long, device=self.device)
+            
+            # Perform strategic training step
+            self._strategic_training_step(all_embeddings, all_labels)
+            
+            logger.debug("Performed strategic training step")
+    
     def predict(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
-        """Predict with adjusted weights for new classes."""
+        """Predict with dual prediction system - blends strategic and regular predictions.
+        
+        If no cost function is provided, uses existing prediction logic (zero changes).
+        If cost function is provided, blends strategic and regular predictions.
+        
+        Args:
+            text: Input text to classify
+            k: Number of top predictions to return
+            
+        Returns:
+            List of (label, confidence) tuples
+        """
         if not text:
             raise ValueError("Empty input text")
         
+        # If strategic mode is not enabled, use regular prediction
+        if not self.strategic_mode:
+            return self._predict_regular(text, k)
+        
+        # Dual prediction system: blend strategic and regular predictions
+        return self._predict_dual(text, k)
+    
+    def _predict_regular(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
+        """Regular prediction logic (original implementation)."""
         # Ensure deterministic behavior
         with torch.no_grad():
             # Get embedding
@@ -286,6 +345,48 @@ class AdaptiveClassifier(ModelHubMixin):
             predictions = [(label, score/total) for label, score in predictions]
         
         return predictions[:k]
+    
+    def _predict_dual(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
+        """Dual prediction system that blends strategic and regular predictions."""
+        # Get regular predictions
+        regular_preds = self._predict_regular(text, k)
+        
+        # Get strategic predictions
+        strategic_preds = self.predict_strategic(text, k)
+        
+        # Blend predictions based on configuration
+        blended_scores = {}
+        
+        # Weight for blending (configurable)
+        regular_weight = self.config.strategic_blend_regular_weight
+        strategic_weight = self.config.strategic_blend_strategic_weight
+        
+        # Combine regular predictions
+        for label, score in regular_preds:
+            blended_scores[label] = score * regular_weight
+        
+        # Combine strategic predictions
+        for label, score in strategic_preds:
+            blended_scores[label] = blended_scores.get(label, 0) + score * strategic_weight
+        
+        # Sort and normalize
+        blended_predictions = sorted(
+            blended_scores.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        # Normalize scores
+        total = sum(score for _, score in blended_predictions)
+        if total > 0:
+            blended_predictions = [
+                (label, score / total) for label, score in blended_predictions
+            ]
+        
+        # Log dual prediction for debugging
+        logger.debug(f"Dual prediction - Regular: {regular_preds[:3]}, Strategic: {strategic_preds[:3]}, Blended: {blended_predictions[:3]}")
+        
+        return blended_predictions[:k]
     
     def _save_pretrained(
         self,
@@ -978,3 +1079,255 @@ This model:
             selected_indices.append(closest_idx)
         
         return [examples[idx] for idx in selected_indices]
+    
+    def _initialize_strategic_components(self):
+        """Initialize strategic classification components."""
+        try:
+            # Create cost function from config
+            if self.config.cost_coefficients:
+                self.strategic_cost_function = CostFunctionFactory.create_cost_function(
+                    cost_type=self.config.cost_function_type,
+                    cost_coefficients=self.config.cost_coefficients
+                )
+                
+                # Initialize strategic optimizer and evaluator
+                self.strategic_optimizer = StrategicOptimizer(self.strategic_cost_function)
+                self.strategic_evaluator = StrategicEvaluator(self.strategic_cost_function)
+                
+                logger.info(f"Initialized strategic mode with {self.config.cost_function_type} cost function")
+            else:
+                logger.warning("Strategic mode enabled but no cost coefficients provided")
+        except Exception as e:
+            logger.error(f"Failed to initialize strategic components: {e}")
+            self.config.enable_strategic_mode = False
+    
+    @property
+    def strategic_mode(self) -> bool:
+        """Check if strategic mode is enabled and properly initialized."""
+        return (
+            self.config.enable_strategic_mode and 
+            self.strategic_cost_function is not None
+        )
+    
+    def _strategic_training_step(self, all_embeddings: torch.Tensor, all_labels: torch.Tensor):
+        """Perform strategic training step."""
+        if not self.strategic_mode or self.adaptive_head is None:
+            return
+        
+        # Use strategic optimizer for training
+        self.adaptive_head.train()
+        optimizer = torch.optim.AdamW(
+            self.adaptive_head.parameters(),
+            lr=self.config.learning_rate * 0.5,  # Lower learning rate for strategic training
+            weight_decay=0.01
+        )
+        
+        # Create data loader for strategic training
+        dataset = torch.utils.data.TensorDataset(all_embeddings, all_labels)
+        loader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=min(16, len(all_embeddings)),  # Smaller batch size for strategic training
+            shuffle=True,
+            generator=torch.Generator().manual_seed(42)
+        )
+        
+        # Strategic training loop
+        for epoch in range(5):  # Fewer epochs for strategic training
+            for batch_embeddings, batch_labels in loader:
+                batch_embeddings = batch_embeddings.to(self.device)
+                batch_labels = batch_labels.to(self.device)
+                
+                optimizer.zero_grad()
+                
+                # Compute strategic loss
+                strategic_loss = self.strategic_optimizer.strategic_loss(
+                    self.adaptive_head,
+                    batch_embeddings,
+                    batch_labels,
+                    self.config.strategic_lambda
+                )
+                
+                strategic_loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    self.adaptive_head.parameters(),
+                    max_norm=1.0
+                )
+                optimizer.step()
+        
+        logger.debug("Completed strategic training step")
+    
+    def predict_strategic(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
+        """Predict assuming the input might be strategically modified.
+        
+        This method simulates how a strategic agent might modify the input
+        to get a better classification outcome, then predicts on that modified input.
+        
+        Args:
+            text: Input text to classify
+            k: Number of top predictions to return
+            
+        Returns:
+            List of (label, confidence) tuples for strategic predictions
+        """
+        if not self.strategic_mode:
+            return self._predict_regular(text, k)
+        
+        try:
+            # Get embedding
+            embedding = self._get_embeddings([text])[0]
+            
+            # Create classifier function for strategic optimization
+            def classifier_func(x):
+                with torch.no_grad():
+                    if self.adaptive_head is not None:
+                        self.adaptive_head.eval()
+                        # Ensure proper input shape
+                        if x.dim() == 1:
+                            x = x.unsqueeze(0)
+                        logits = self.adaptive_head(x.to(self.device))
+                        return F.softmax(logits, dim=-1)
+                    else:
+                        # Fallback to uniform distribution if no neural head
+                        num_classes = len(self.label_to_id) if self.label_to_id else 1
+                        return torch.ones(1, num_classes) / num_classes
+            
+            # Compute what the strategic response would be
+            strategic_embedding = self.strategic_cost_function.compute_best_response(
+                embedding, classifier_func
+            )
+            
+            # Predict on the strategic embedding
+            return self._predict_from_embedding(strategic_embedding, k, strategic=True)
+            
+        except Exception as e:
+            logger.warning(f"Strategic prediction failed: {e}. Falling back to regular prediction.")
+            return self._predict_regular(text, k)
+    
+    def predict_robust(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
+        """Predict assuming input has already been strategically modified.
+        
+        This method assumes the input text has already been strategically manipulated
+        and applies robust prediction techniques that are less susceptible to such manipulation.
+        
+        Args:
+            text: Input text (potentially strategically modified)
+            k: Number of top predictions to return
+            
+        Returns:
+            List of (label, confidence) tuples for robust predictions
+        """
+        if not self.strategic_mode:
+            return self._predict_regular(text, k)
+        
+        try:
+            # Get embedding
+            embedding = self._get_embeddings([text])[0]
+            
+            # Use strategic-aware prediction that considers manipulation
+            return self._predict_from_embedding(embedding, k, robust=True)
+            
+        except Exception as e:
+            logger.warning(f"Robust prediction failed: {e}. Falling back to regular prediction.")
+            return self._predict_regular(text, k)
+    
+    def _predict_from_embedding(
+        self, 
+        embedding: torch.Tensor, 
+        k: int = 5, 
+        robust: bool = False,
+        strategic: bool = False
+    ) -> List[Tuple[str, float]]:
+        """Helper method to predict from embedding with strategic considerations.
+        
+        Args:
+            embedding: Input embedding tensor
+            k: Number of top predictions to return
+            robust: If True, applies robust prediction weights
+            strategic: If True, indicates this is for strategic prediction
+            
+        Returns:
+            List of (label, confidence) tuples
+        """
+        with torch.no_grad():
+            # Get prototype predictions
+            proto_preds = self.memory.get_nearest_prototypes(embedding, k=k)
+            
+            # Get neural predictions if available
+            if self.adaptive_head is not None:
+                self.adaptive_head.eval()
+                input_embedding = embedding.unsqueeze(0).to(self.device)
+                logits = self.adaptive_head(input_embedding)
+                logits = logits.squeeze(0)
+                probs = F.softmax(logits, dim=0)
+                
+                values, indices = torch.topk(probs, min(k, len(self.id_to_label)))
+                head_preds = [
+                    (self.id_to_label[idx.item()], val.item())
+                    for val, idx in zip(values, indices)
+                ]
+            else:
+                head_preds = []
+        
+        # Combine predictions with strategic adjustments
+        combined_scores = {}
+        
+        # Determine weights based on prediction mode
+        if self.strategic_mode and robust:
+            # In robust mode, weight prototypes more heavily
+            # as they're less susceptible to strategic manipulation
+            proto_weight = self.config.strategic_robust_proto_weight
+            head_weight = self.config.strategic_robust_head_weight
+        elif self.strategic_mode and strategic:
+            # In strategic mode, balance weights differently
+            # Neural networks may be more responsive to strategic changes
+            proto_weight = self.config.strategic_prediction_proto_weight
+            head_weight = self.config.strategic_prediction_head_weight
+        else:
+            # Regular weighting
+            proto_weight = self.config.prototype_weight
+            head_weight = self.config.neural_weight
+        
+        for label, score in proto_preds:
+            combined_scores[label] = score * proto_weight
+        
+        for label, score in head_preds:
+            combined_scores[label] = combined_scores.get(label, 0) + score * head_weight
+        
+        # Normalize scores
+        predictions = sorted(
+            combined_scores.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        total = sum(score for _, score in predictions)
+        if total > 0:
+            predictions = [(label, score/total) for label, score in predictions]
+        
+        return predictions[:k]
+    
+    def evaluate_strategic_robustness(
+        self,
+        test_texts: List[str],
+        test_labels: List[str],
+        gaming_levels: List[float] = [0.0, 0.5, 1.0]
+    ) -> Dict[str, float]:
+        """Evaluate strategic robustness of the classifier."""
+        if not self.strategic_mode:
+            raise ValueError("Strategic mode not enabled")
+        
+        # Get test embeddings
+        test_embeddings = torch.stack(self._get_embeddings(test_texts))
+        
+        # Convert labels to indices
+        test_label_indices = torch.tensor([
+            self.label_to_id[label] for label in test_labels
+        ])
+        
+        # Evaluate robustness
+        return self.strategic_evaluator.evaluate_robustness(
+            self.adaptive_head,
+            test_embeddings,
+            test_label_indices,
+            gaming_levels
+        )
