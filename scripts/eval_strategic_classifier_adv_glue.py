@@ -828,7 +828,7 @@ def main():
                 'robust_mode': robust_results
             },
             'strategic_robustness': robustness_results,
-            'fair_comparison_on_manipulated_data': fair_comparison_results,
+            'fair_comparison_on_manipulated_data': comparison_results,
             'comparison': {
                 'accuracy_improvement': strategic_dual_results['accuracy'] - regular_results['accuracy'],
                 'f1_improvement': strategic_dual_results['f1_score'] - regular_results['f1_score'],
