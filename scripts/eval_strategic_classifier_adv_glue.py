@@ -868,13 +868,13 @@ def main():
             logger.info(f"Relative Robustness: {robustness_results['summary']['relative_robustness']:.4f}")
         
         # Fair comparison on manipulated data
-        if comparison_results and 'fair_comparison' in comparison_results:
+        if comparison_results and 'comparison' in comparison_results:
             logger.info("")  # Empty line for spacing
             logger.info("COMPARISON ON MANIPULATED DATA:")
             logger.info(f"Regular Classifier on Manipulated Data: {comparison_results['regular_on_manipulated']['accuracy']:.4f}")
             logger.info(f"Strategic Classifier on Manipulated Data: {comparison_results['strategic_on_manipulated']['accuracy']:.4f}")
-            logger.info(f"Accuracy Improvement: {comparison_results['fair_comparison']['accuracy_improvement']:.4f}")
-            logger.info(f"F1-score Improvement: {comparison_results['fair_comparison']['f1_improvement']:.4f}")
+            logger.info(f"Accuracy Improvement: {comparison_results['comparison']['accuracy_improvement']:.4f}")
+            logger.info(f"F1-score Improvement: {comparison_results['comparison']['f1_improvement']:.4f}")
         
         logger.info("")  # Empty line for spacing
         logger.info(f"Total Evaluation Time: {total_time:.2f} seconds")
