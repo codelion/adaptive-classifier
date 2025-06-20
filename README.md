@@ -158,6 +158,52 @@ The system combines four key components:
 
 ## Adaptive Classification with LLMs
 
+### Strategic Classification Evaluation
+
+We evaluated the strategic classification feature using the [AI-Secure/adv_glue](https://huggingface.co/datasets/AI-Secure/adv_glue) dataset, specifically the `adv_sst2` subset, which contains adversarially-modified sentiment analysis examples designed to test robustness against strategic manipulation.
+
+#### How Strategic Classification Works
+
+Strategic classification defends against adversarial manipulation by anticipating how users might try to game the system. During training, it learns to:
+
+1. **Model Strategic Behavior**: Simulate how adversaries might modify inputs to get desired classifications
+2. **Learn Robust Features**: Focus on features that are harder to manipulate
+3. **Blend Predictions**: Combine regular predictions with strategic-aware predictions for robustness
+
+The system provides multiple prediction modes:
+- **Dual**: Blended regular + strategic predictions (default when strategic mode enabled)
+- **Strategic**: Pure strategic predictions simulating adversarial manipulation
+- **Robust**: Anti-manipulation predictions assuming input is already modified
+
+#### Evaluation Results
+
+**Dataset**: 148 adversarial examples, 70/30 train/test split
+**Model**: answerdotai/ModernBERT-base
+**Task**: Binary sentiment classification (positive/negative)
+
+| Scenario | Regular Classifier | Strategic Classifier | Advantage |
+|----------|-------------------|---------------------|----------|
+| Clean Data | 80.00% | 77.78% | -2.22% |
+| **Under Attack** | **64.44%** | **77.78%** | **+13.33%** |
+
+#### Key Results
+
+**🎯 Robustness Under Attack**: When facing adversarial examples, the strategic classifier maintains 77.78% accuracy while the regular classifier drops to 64.44% - a **13.33% robustness advantage**.
+
+**💡 Strategic Trade-off**: The system sacrifices 2.22% accuracy on clean data to gain 13.33% robustness under attack - a **6:1 return on investment**.
+
+**🛡️ Consistent Defense**: The strategic classifier maintains nearly identical performance whether data is clean or manipulated, demonstrating effective adversarial robustness.
+
+#### When to Use Strategic Classification
+
+Strategic classification is ideal for applications where:
+- **Users might game the system**: Review manipulation, survey responses, content moderation
+- **Adversarial robustness is critical**: Spam detection, fraud detection, security applications
+- **Consistent performance matters**: Scenarios where you need reliable performance regardless of input manipulation
+- **Attack scenarios are likely**: Any system where users have incentives to manipulate classifications
+
+**Bottom Line**: Strategic classification successfully provides significant robustness against adversarial manipulation while maintaining competitive clean-data performance.
+
 ### Hallucination Detector
 
 The adaptive classifier can detect hallucinations in language model outputs, especially in Retrieval-Augmented Generation (RAG) scenarios. Despite incorporating external knowledge sources, LLMs often still generate content that isn't supported by the provided context. Our hallucination detector identifies when a model's output contains information that goes beyond what's present in the source material.

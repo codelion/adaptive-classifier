@@ -647,7 +647,7 @@ def evaluate_fair_comparison(
         Dictionary with fair comparison results
     """
     logger.info("="*60)
-    logger.info("FAIR EVALUATION ON MANIPULATED DATA")
+    logger.info("EVALUATION ON MANIPULATED DATA")
     logger.info("="*60)
     
     # Generate strategically manipulated data
@@ -870,11 +870,11 @@ def main():
         # Fair comparison on manipulated data
         if fair_comparison_results and 'fair_comparison' in fair_comparison_results:
             logger.info("")  # Empty line for spacing
-            logger.info("FAIR COMPARISON ON MANIPULATED DATA:")
+            logger.info("COMPARISON ON MANIPULATED DATA:")
             logger.info(f"Regular Classifier on Manipulated Data: {fair_comparison_results['regular_on_manipulated']['accuracy']:.4f}")
             logger.info(f"Strategic Classifier on Manipulated Data: {fair_comparison_results['strategic_on_manipulated']['accuracy']:.4f}")
-            logger.info(f"Fair Accuracy Improvement: {fair_comparison_results['fair_comparison']['accuracy_improvement']:.4f}")
-            logger.info(f"Fair F1-score Improvement: {fair_comparison_results['fair_comparison']['f1_improvement']:.4f}")
+            logger.info(f"Accuracy Improvement: {fair_comparison_results['fair_comparison']['accuracy_improvement']:.4f}")
+            logger.info(f"F1-score Improvement: {fair_comparison_results['fair_comparison']['f1_improvement']:.4f}")
         
         logger.info("")  # Empty line for spacing
         logger.info(f"Total Evaluation Time: {total_time:.2f} seconds")
