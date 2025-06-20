@@ -136,7 +136,7 @@ print(f"Robust: {robust_preds}")
 
 The Adaptive Classifier combines four key components in a unified architecture:
 
-![Adaptive Classifier Architecture](docs/images/architecture_diagram.svg)
+![Adaptive Classifier Architecture](docs/images/architecture_diagram.png)
 
 1. **Transformer Embeddings**: Uses state-of-the-art language models for text representation
 
@@ -154,7 +154,7 @@ The Adaptive Classifier combines four key components in a unified architecture:
 
 Traditional classification approaches face significant limitations when dealing with evolving requirements and adversarial environments:
 
-![Traditional vs Adaptive Classification](docs/images/comparison_traditional_vs_adaptive.svg)
+![Traditional vs Adaptive Classification](docs/images/comparison_traditional_vs_adaptive.png)
 
 The Adaptive Classifier overcomes these limitations through:
 - **Dynamic class addition** without full retraining
@@ -167,7 +167,7 @@ The Adaptive Classifier overcomes these limitations through:
 
 The system evolves through distinct phases, each building upon previous knowledge without catastrophic forgetting:
 
-![Continuous Learning Workflow](docs/images/continuous_learning_workflow.svg)
+![Continuous Learning Workflow](docs/images/continuous_learning_workflow.png)
 
 The learning process includes:
 - **Initial Training**: Bootstrap with basic classes
