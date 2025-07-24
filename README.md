@@ -432,6 +432,10 @@ With this configuration:
 1. **For maximum consistency**: Use prototype-only configuration
 2. **For maximum accuracy**: Accept some order dependency with the default hybrid approach
 3. **For production systems**: Consider batching updates and retraining periodically if strict consistency is required
+4. **Model selection matters**: Some models (e.g., `google-bert/bert-large-cased`) may produce poor embeddings for single words. For better results with short inputs, consider:
+   - `bert-base-uncased`
+   - `sentence-transformers/all-MiniLM-L6-v2`
+   - Or any model specifically trained for semantic similarity
 
 ## Citation
 
