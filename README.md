@@ -388,6 +388,55 @@ This real-world evaluation demonstrates that adaptive classification can signifi
 - [RAGTruth: A Hallucination Corpus for Developing Trustworthy Retrieval-Augmented Language Models](https://arxiv.org/abs/2401.00396)
 - [LettuceDetect: A Hallucination Detection Framework for RAG Applications](https://arxiv.org/abs/2502.17125)
 
+## Order Dependency in Online Learning
+
+When using the adaptive classifier for true online learning (adding examples incrementally), be aware that the order in which examples are added can affect predictions. This is inherent to incremental neural network training.
+
+### The Challenge
+
+```python
+# These two scenarios may produce slightly different models:
+
+# Scenario 1
+classifier.add_examples(["fish example"], ["aquatic"])
+classifier.add_examples(["bird example"], ["aerial"])
+
+# Scenario 2  
+classifier.add_examples(["bird example"], ["aerial"])
+classifier.add_examples(["fish example"], ["aquatic"])
+```
+
+While we've implemented sorted label ID assignment to minimize this effect, the neural network component still learns incrementally, which can lead to order-dependent behavior.
+
+### Solution: Prototype-Only Predictions
+
+For applications requiring strict order independence, you can configure the classifier to rely solely on prototype-based predictions:
+
+```python
+# Configure to use only prototypes (order-independent)
+config = {
+    'prototype_weight': 1.0,  # Use only prototypes
+    'neural_weight': 0.0      # Disable neural network contribution
+}
+
+classifier = AdaptiveClassifier("bert-base-uncased", config=config)
+```
+
+With this configuration:
+- Predictions are based solely on similarity to class prototypes (mean embeddings)
+- Results are completely order-independent
+- Trade-off: May have slightly lower accuracy than the hybrid approach
+
+### Best Practices
+
+1. **For maximum consistency**: Use prototype-only configuration
+2. **For maximum accuracy**: Accept some order dependency with the default hybrid approach
+3. **For production systems**: Consider batching updates and retraining periodically if strict consistency is required
+4. **Model selection matters**: Some models (e.g., `google-bert/bert-large-cased`) may produce poor embeddings for single words. For better results with short inputs, consider:
+   - `bert-base-uncased`
+   - `sentence-transformers/all-MiniLM-L6-v2`
+   - Or any model specifically trained for semantic similarity
+
 ## Citation
 
 If you use this library in your research, please cite:

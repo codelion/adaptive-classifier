@@ -66,6 +66,7 @@ class AdaptiveClassifier(ModelHubMixin):
         
         # Statistics
         self.train_steps = 0
+        self.training_history = {}  # Track cumulative training examples per class
         
         # Strategic classification components
         self.strategic_cost_function = None
@@ -87,8 +88,8 @@ class AdaptiveClassifier(ModelHubMixin):
         new_classes = set(labels) - set(self.label_to_id.keys())
         is_adding_new_classes = len(new_classes) > 0
         
-        # Update label mappings
-        for label in new_classes:
+        # Update label mappings - sort new classes alphabetically for consistent IDs
+        for label in sorted(new_classes):
             idx = len(self.label_to_id)
             self.label_to_id[label] = idx
             self.id_to_label[idx] = label
@@ -96,10 +97,15 @@ class AdaptiveClassifier(ModelHubMixin):
         # Get embeddings for all texts
         embeddings = self._get_embeddings(texts)
         
-        # Add examples to memory
+        # Add examples to memory and update training history
         for text, embedding, label in zip(texts, embeddings, labels):
             example = Example(text, label, embedding)
             self.memory.add_example(example, label)
+            
+            # Update training history
+            if label not in self.training_history:
+                self.training_history[label] = 0
+            self.training_history[label] += 1
         
         # Special handling for new classes
         if is_adding_new_classes:
@@ -118,6 +124,9 @@ class AdaptiveClassifier(ModelHubMixin):
             # Strategic training step if enabled
             if self.strategic_mode and self.train_steps % self.config.strategic_training_frequency == 0:
                 self._perform_strategic_training()
+        
+        # Ensure FAISS index is up to date after adding examples
+        self.memory._rebuild_index()
     
     def _train_new_classes(self, old_head: Optional[nn.Module], new_classes: Set[str]):
         """Train the model with focus on new classes while preserving old class knowledge."""
@@ -317,17 +326,21 @@ class AdaptiveClassifier(ModelHubMixin):
         # Combine predictions with adjusted weights
         combined_scores = {}
         
-        # Use neural predictions more for recent classes
+        # Use training history to determine weights
         for label, score in proto_preds:
-            if label in self.memory.examples and len(self.memory.examples[label]) < 10:
-                # For newer classes (fewer examples), trust neural predictions more
+            # Check training history instead of current storage
+            trained_examples = self.training_history.get(label, 0)
+            if trained_examples < 10:
+                # For newer classes (fewer training examples), trust neural predictions more
                 weight = 0.3  # Lower prototype weight for new classes
             else:
                 weight = 0.7  # Higher prototype weight for established classes
             combined_scores[label] = score * weight
         
         for label, score in head_preds:
-            if label in self.memory.examples and len(self.memory.examples[label]) < 10:
+            # Use training history for neural weights too
+            trained_examples = self.training_history.get(label, 0)
+            if trained_examples < 10:
                 weight = 0.7  # Higher neural weight for new classes
             else:
                 weight = 0.3  # Lower neural weight for established classes
@@ -414,6 +427,7 @@ class AdaptiveClassifier(ModelHubMixin):
             'label_to_id': self.label_to_id,
             'id_to_label': {str(k): v for k, v in self.id_to_label.items()},
             'train_steps': self.train_steps,
+            'training_history': self.training_history,  # Save cumulative training counts
             'config': self.config.to_dict()
         }
 
@@ -569,6 +583,9 @@ class AdaptiveClassifier(ModelHubMixin):
             int(k): v for k, v in config_dict['id_to_label'].items()
         }
         classifier.train_steps = config_dict['train_steps']
+        
+        # Restore training history with backward compatibility
+        classifier.training_history = config_dict.get('training_history', {})
 
         # Load tensors
         tensors = load_file(model_path / "model.safetensors")
@@ -599,6 +616,13 @@ class AdaptiveClassifier(ModelHubMixin):
         if adaptive_head_params:
             classifier._initialize_adaptive_head()
             classifier.adaptive_head.load_state_dict(adaptive_head_params)
+
+        # Backward compatibility: estimate training history if not present
+        if not classifier.training_history:
+            for label, examples in saved_examples.items():
+                # Estimate based on saved examples (default saves 5, typical training uses 100+)
+                # Using 20x multiplier as reasonable estimate
+                classifier.training_history[label] = len(examples) * 20
 
         return classifier
 
@@ -754,12 +778,7 @@ This model:
         ).to(self.device)
 
     def _get_embeddings(self, texts: List[str]) -> List[torch.Tensor]:
-        """Get embeddings for input texts with improved caching."""
-        # Sort texts for consistent tokenization
-        sorted_indices = list(range(len(texts)))
-        sorted_indices.sort(key=lambda i: texts[i])
-        sorted_texts = [texts[i] for i in sorted_indices]
-        
+        """Get embeddings for input texts."""
         # Temporarily set model to eval mode
         was_training = self.model.training
         self.model.eval()
@@ -767,7 +786,7 @@ This model:
         # Get embeddings
         with torch.no_grad():
             inputs = self.tokenizer(
-                sorted_texts,
+                texts,
                 max_length=self.config.max_length,
                 truncation=True,
                 padding=True,
@@ -784,12 +803,8 @@ This model:
         if was_training:
             self.model.train()
         
-        # Restore original order
-        original_order = [0] * len(texts)
-        for i, idx in enumerate(sorted_indices):
-            original_order[idx] = embeddings[i].cpu()
-        
-        return original_order
+        # Return embeddings as list
+        return [emb.cpu() for emb in embeddings]
 
     def get_example_statistics(self) -> Dict[str, Any]:
         """Get statistics about stored examples and model state."""
