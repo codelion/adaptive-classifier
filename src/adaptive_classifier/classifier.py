@@ -124,6 +124,9 @@ class AdaptiveClassifier(ModelHubMixin):
             # Strategic training step if enabled
             if self.strategic_mode and self.train_steps % self.config.strategic_training_frequency == 0:
                 self._perform_strategic_training()
+        
+        # Ensure FAISS index is up to date after adding examples
+        self.memory._rebuild_index()
     
     def _train_new_classes(self, old_head: Optional[nn.Module], new_classes: Set[str]):
         """Train the model with focus on new classes while preserving old class knowledge."""
