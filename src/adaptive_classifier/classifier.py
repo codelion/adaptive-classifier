@@ -88,8 +88,8 @@ class AdaptiveClassifier(ModelHubMixin):
         new_classes = set(labels) - set(self.label_to_id.keys())
         is_adding_new_classes = len(new_classes) > 0
         
-        # Update label mappings
-        for label in new_classes:
+        # Update label mappings - sort new classes alphabetically for consistent IDs
+        for label in sorted(new_classes):
             idx = len(self.label_to_id)
             self.label_to_id[label] = idx
             self.id_to_label[idx] = label
