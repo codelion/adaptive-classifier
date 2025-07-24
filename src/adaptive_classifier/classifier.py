@@ -778,12 +778,7 @@ This model:
         ).to(self.device)
 
     def _get_embeddings(self, texts: List[str]) -> List[torch.Tensor]:
-        """Get embeddings for input texts with improved caching."""
-        # Sort texts for consistent tokenization
-        sorted_indices = list(range(len(texts)))
-        sorted_indices.sort(key=lambda i: texts[i])
-        sorted_texts = [texts[i] for i in sorted_indices]
-        
+        """Get embeddings for input texts."""
         # Temporarily set model to eval mode
         was_training = self.model.training
         self.model.eval()
@@ -791,7 +786,7 @@ This model:
         # Get embeddings
         with torch.no_grad():
             inputs = self.tokenizer(
-                sorted_texts,
+                texts,
                 max_length=self.config.max_length,
                 truncation=True,
                 padding=True,
@@ -808,12 +803,8 @@ This model:
         if was_training:
             self.model.train()
         
-        # Restore original order
-        original_order = [0] * len(texts)
-        for i, idx in enumerate(sorted_indices):
-            original_order[idx] = embeddings[i].cpu()
-        
-        return original_order
+        # Return embeddings as list
+        return [emb.cpu() for emb in embeddings]
 
     def get_example_statistics(self) -> Dict[str, Any]:
         """Get statistics about stored examples and model state."""
