@@ -78,7 +78,7 @@ class EWC:
             log_probs = F.log_softmax(outputs, dim=1)
             
             # Sample from output distribution
-            sampled_labels = torch.multinomial(probs, 1).squeeze()
+            sampled_labels = torch.multinomial(probs, 1).squeeze(-1)
             
             # Compute loss with sampled labels
             loss = F.nll_loss(log_probs, sampled_labels)
