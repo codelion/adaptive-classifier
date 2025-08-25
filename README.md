@@ -382,14 +382,10 @@ With this configuration:
 
 ---
 
----
-
 ## 🔗 Related Projects
 
 - **[OpenEvolve](https://github.com/codelion/openevolve)** - Open-source evolutionary coding agent for algorithm discovery
 - **[OptiLLM](https://github.com/codelion/optillm)** - Optimizing inference proxy with 20+ techniques for 2-10x accuracy improvements
-
----
 
 ## 🤝 Community & Contributing
 
