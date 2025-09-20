@@ -367,10 +367,12 @@ class AdaptiveClassifier(ModelHubMixin):
             # Get embedding
             embedding = self._get_embeddings([text])[0]
             
-            # Get prototype predictions
-            proto_preds = self.memory.get_nearest_prototypes(embedding, k=k)
-            
-            # Get neural predictions if available
+            # Get prototype predictions for ALL classes (not limited by k)
+            # This ensures complete scoring information for proper combination
+            max_classes = len(self.id_to_label) if self.id_to_label else k
+            proto_preds = self.memory.get_nearest_prototypes(embedding, k=max_classes)
+
+            # Get neural predictions if available for ALL classes (not limited by k)
             if self.adaptive_head is not None:
                 self.adaptive_head.eval()  # Ensure eval mode
                 # Add batch dimension and move to device
@@ -379,8 +381,9 @@ class AdaptiveClassifier(ModelHubMixin):
                 # Squeeze batch dimension
                 logits = logits.squeeze(0)
                 probs = F.softmax(logits, dim=0)
-                
-                values, indices = torch.topk(probs, min(k, len(self.id_to_label)))
+
+                # Get predictions for ALL classes for proper scoring combination
+                values, indices = torch.topk(probs, len(self.id_to_label))
                 head_preds = [
                     (self.id_to_label[idx.item()], val.item())
                     for val, idx in zip(values, indices)
