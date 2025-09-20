@@ -83,55 +83,67 @@ class AdaptiveClassifier(ModelHubMixin):
             raise ValueError("Empty input lists")
         if len(texts) != len(labels):
             raise ValueError("Mismatched text and label lists")
-        
+
+        # Check if classifier has any existing classes (before updating mappings)
+        has_existing_classes = len(self.label_to_id) > 0
+
         # Check for new classes
         new_classes = set(labels) - set(self.label_to_id.keys())
         is_adding_new_classes = len(new_classes) > 0
-        
+
         # Update label mappings - sort new classes alphabetically for consistent IDs
         for label in sorted(new_classes):
             idx = len(self.label_to_id)
             self.label_to_id[label] = idx
             self.id_to_label[idx] = label
-        
+
         # Get embeddings for all texts
         embeddings = self._get_embeddings(texts)
-        
+
         # Add examples to memory and update training history
         for text, embedding, label in zip(texts, embeddings, labels):
             example = Example(text, label, embedding)
             self.memory.add_example(example, label)
-            
+
             # Update training history
             if label not in self.training_history:
                 self.training_history[label] = 0
             self.training_history[label] += 1
-        
-        # Special handling for new classes
-        if is_adding_new_classes:
+
+        # Determine training strategy: only use special new class handling for incremental learning
+        is_incremental_learning = is_adding_new_classes and has_existing_classes
+
+        if is_incremental_learning:
+            # Adding new classes to existing classifier - use special handling
             # Store old head for EWC before modifying structure
             old_head = copy.deepcopy(self.adaptive_head) if self.adaptive_head is not None else None
 
-            if self.adaptive_head is None:
-                # First time initialization
-                self._initialize_adaptive_head()
-            else:
-                # Expand existing head to accommodate new classes (preserves weights)
-                num_classes = len(self.label_to_id)
-                self.adaptive_head.update_num_classes(num_classes)
-                # Move to correct device after update
-                self.adaptive_head = self.adaptive_head.to(self.device)
+            # Expand existing head to accommodate new classes (preserves weights)
+            num_classes = len(self.label_to_id)
+            self.adaptive_head.update_num_classes(num_classes)
+            # Move to correct device after update
+            self.adaptive_head = self.adaptive_head.to(self.device)
 
             # Train with focus on new classes
             self._train_new_classes(old_head, new_classes)
         else:
-            # Regular training for existing classes
+            # Initial training or regular updates - use normal training
+            # Initialize head if needed
+            if self.adaptive_head is None:
+                self._initialize_adaptive_head()
+            elif is_adding_new_classes:
+                # Edge case: expanding head for new classes but treating as regular training
+                num_classes = len(self.label_to_id)
+                self.adaptive_head.update_num_classes(num_classes)
+                self.adaptive_head = self.adaptive_head.to(self.device)
+
+            # Regular training
             self._train_adaptive_head()
-            
+
             # Strategic training step if enabled
             if self.strategic_mode and self.train_steps % self.config.strategic_training_frequency == 0:
                 self._perform_strategic_training()
-        
+
         # Ensure FAISS index is up to date after adding examples
         self.memory._rebuild_index()
     
