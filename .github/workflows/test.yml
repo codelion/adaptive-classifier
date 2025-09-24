@@ -25,6 +25,8 @@ jobs:
         pip install pytest pytest-cov psutil
 
     - name: Run unit tests
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
         pytest tests/ -v --cov=adaptive_classifier --cov-report=xml --cov-report=term -m "not integration"
 
@@ -56,6 +58,8 @@ jobs:
         pip install pytest psutil
 
     - name: Run integration tests
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
         pytest tests/test_enterprise_classifiers_integration.py -v -m "integration" --tb=short
 
