@@ -15,7 +15,7 @@ test_requirements = [
 
 setup(
     name="adaptive-classifier",
-    version="0.0.17",
+    version="0.0.18",
     author="codelion",
     author_email="codelion@okyasoft.com",
     description="A flexible, adaptive classification system for dynamic text classification",

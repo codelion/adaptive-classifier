@@ -136,6 +136,37 @@ print(predictions)
 # Output: [('positive', 0.85), ('neutral', 0.12), ('negative', 0.03)]
 ```
 
+### 🏷️ Multi-Label Classification
+
+Classify texts into multiple categories simultaneously with automatic threshold adaptation:
+
+```python
+from adaptive_classifier import MultiLabelAdaptiveClassifier
+
+# Initialize multi-label classifier
+classifier = MultiLabelAdaptiveClassifier(
+    "bert-base-uncased",
+    min_predictions=1,    # Ensure at least 1 prediction
+    max_predictions=5     # Limit to top 5 predictions
+)
+
+# Multi-label training data (each text can have multiple labels)
+texts = [
+    "AI researchers study climate change using machine learning",
+    "Tech startup develops healthcare solutions"
+]
+labels = [
+    ["technology", "science", "climate", "ai"],
+    ["technology", "business", "healthcare"]
+]
+
+classifier.add_examples(texts, labels)
+
+# Make multi-label predictions
+predictions = classifier.predict_multilabel("Medical AI breakthrough announced")
+# Output: [('healthcare', 0.72), ('technology', 0.68), ('ai', 0.45)]
+```
+
 ### 💾 Save & Load Models
 
 ```python
@@ -188,6 +219,46 @@ more_labels = ["positive"] * 2
 classifier.add_examples(more_examples, more_labels)
 ```
 
+### Multi-Label Classification with Advanced Configuration
+
+```python
+from adaptive_classifier import MultiLabelAdaptiveClassifier
+
+# Configure advanced multi-label settings
+classifier = MultiLabelAdaptiveClassifier(
+    "bert-base-uncased",
+    default_threshold=0.5,      # Base threshold for predictions
+    min_predictions=1,          # Minimum labels to return
+    max_predictions=10          # Maximum labels to return
+)
+
+# Training with diverse multi-label examples
+texts = [
+    "Scientists develop AI for medical diagnosis and climate research",
+    "Tech company launches sustainable energy and healthcare products",
+    "Olympic athletes use sports science and nutrition technology"
+]
+labels = [
+    ["science", "ai", "healthcare", "research"],
+    ["technology", "business", "environment", "healthcare"],
+    ["sports", "science", "health", "technology"]
+]
+
+classifier.add_examples(texts, labels)
+
+# Advanced prediction options
+predictions = classifier.predict_multilabel(
+    "New research on AI applications in environmental science",
+    threshold=0.3,     # Custom threshold
+    max_labels=5       # Limit results
+)
+
+# Get detailed statistics
+stats = classifier.get_label_statistics()
+print(f"Adaptive threshold: {stats['adaptive_threshold']}")
+print(f"Label-specific thresholds: {stats['label_thresholds']}")
+```
+
 ### Strategic Classification (Anti-Gaming)
 
 ```python
@@ -223,6 +294,69 @@ print(f"Dual: {predictions}")
 print(f"Strategic: {strategic_preds}")
 print(f"Robust: {robust_preds}")
 ```
+
+## 🏷️ Multi-Label Classification
+
+The `MultiLabelAdaptiveClassifier` extends adaptive classification to handle scenarios where each text can belong to multiple categories simultaneously. It automatically handles threshold adaptation for scenarios with many labels.
+
+### Key Features
+
+- **🎯 Automatic Threshold Adaptation**: Dynamically adjusts thresholds based on the number of labels to prevent empty predictions
+- **📊 Sigmoid Activation**: Uses proper multi-label architecture with BCE loss instead of softmax
+- **⚙️ Configurable Limits**: Set minimum and maximum number of predictions per input
+- **📈 Label-Specific Thresholds**: Automatically adjusts thresholds based on label frequency
+- **🔄 Incremental Learning**: Add new labels and examples without retraining from scratch
+
+### Usage
+
+```python
+from adaptive_classifier import MultiLabelAdaptiveClassifier
+
+# Initialize with configuration
+classifier = MultiLabelAdaptiveClassifier(
+    "distilbert/distilbert-base-cased",
+    default_threshold=0.5,
+    min_predictions=1,
+    max_predictions=5
+)
+
+# Multi-label training data
+texts = [
+    "Breaking: Scientists discover AI can help predict climate change patterns",
+    "Tech giant announces breakthrough in quantum computing for healthcare",
+    "Olympic committee adopts new sports technology for athlete performance"
+]
+
+labels = [
+    ["science", "technology", "climate", "news"],
+    ["technology", "healthcare", "quantum", "business"],
+    ["sports", "technology", "performance", "news"]
+]
+
+# Train the classifier
+classifier.add_examples(texts, labels)
+
+# Make predictions
+predictions = classifier.predict_multilabel(
+    "Revolutionary medical AI system launched by tech startup"
+)
+
+# Results: [('technology', 0.85), ('healthcare', 0.72), ('business', 0.45)]
+```
+
+### Adaptive Thresholds
+
+The classifier automatically adjusts prediction thresholds based on the number of labels:
+
+| Number of Labels | Threshold | Benefit |
+|-----------------|-----------|---------|
+| 2-4 labels | 0.5 (default) | Standard precision |
+| 5-9 labels | 0.4 (20% lower) | Balanced recall |
+| 10-19 labels | 0.3 (40% lower) | Better coverage |
+| 20-29 labels | 0.2 (60% lower) | Prevents empty results |
+| 30+ labels | 0.1 (80% lower) | Ensures predictions |
+
+This solves the common "No labels met the threshold criteria" issue when dealing with many-label scenarios.
 
 ---
 
