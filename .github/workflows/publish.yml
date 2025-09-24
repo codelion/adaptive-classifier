@@ -23,6 +23,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install setuptools wheel
       - name: Run tests
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           pip install pytest pytest-cov pytest-randomly psutil
           pip install -e .
