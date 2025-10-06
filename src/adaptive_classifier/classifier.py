@@ -522,7 +522,7 @@ class AdaptiveClassifier(ModelHubMixin):
         self,
         save_directory: Union[str, Path],
         config: Optional[Dict[str, Any]] = None,
-        include_onnx: bool = False,
+        include_onnx: bool = True,
         quantize_onnx: bool = False,
         **kwargs
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -531,7 +531,7 @@ class AdaptiveClassifier(ModelHubMixin):
         Args:
             save_directory: Directory to save the model to
             config: Optional additional configuration
-            include_onnx: Whether to include ONNX export
+            include_onnx: Whether to include ONNX export (default: True)
             quantize_onnx: Whether to quantize ONNX model (requires include_onnx=True)
             **kwargs: Additional arguments passed to save_pretrained
 
@@ -1007,22 +1007,22 @@ This model:
     def push_to_hub(
         self,
         repo_id: str,
-        include_onnx: bool = False,
+        include_onnx: bool = True,
         quantize_onnx: bool = False,
         **kwargs
     ):
-        """Push model to HuggingFace Hub with optional ONNX export.
+        """Push model to HuggingFace Hub with ONNX export by default.
 
         Args:
             repo_id: Repository ID on HuggingFace Hub (e.g., "username/model-name")
-            include_onnx: Whether to include ONNX version of the model
+            include_onnx: Whether to include ONNX version of the model (default: True)
             quantize_onnx: Whether to quantize the ONNX model (requires include_onnx=True)
             **kwargs: Additional arguments passed to ModelHub push_to_hub
 
         Examples:
-            >>> classifier.push_to_hub("my-org/my-classifier")
-            >>> classifier.push_to_hub("my-org/my-classifier", include_onnx=True)
-            >>> classifier.push_to_hub("my-org/my-classifier", include_onnx=True, quantize_onnx=True)
+            >>> classifier.push_to_hub("my-org/my-classifier")  # ONNX included by default
+            >>> classifier.push_to_hub("my-org/my-classifier", quantize_onnx=True)
+            >>> classifier.push_to_hub("my-org/my-classifier", include_onnx=False)  # Opt-out
         """
         import tempfile
 
@@ -1044,12 +1044,12 @@ This model:
             )
 
     # Keep existing save/load methods for backwards compatibility
-    def save(self, save_dir: str, include_onnx: bool = False, quantize_onnx: bool = False):
+    def save(self, save_dir: str, include_onnx: bool = True, quantize_onnx: bool = False):
         """Legacy save method for backwards compatibility.
 
         Args:
             save_dir: Directory to save to
-            include_onnx: Whether to include ONNX export
+            include_onnx: Whether to include ONNX export (default: True)
             quantize_onnx: Whether to quantize ONNX model
         """
         return self._save_pretrained(

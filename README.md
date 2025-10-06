@@ -221,14 +221,17 @@ predictions = classifier.predict("Fast inference!")
 #### Save & Deploy with ONNX
 
 ```python
-# Save with ONNX export for production
-classifier.save("./model", include_onnx=True)
+# Save with ONNX export (included by default)
+classifier.save("./model")
 
-# Push to Hub with ONNX for faster inference
-classifier.push_to_hub("username/model", include_onnx=True)
+# Push to Hub with ONNX (included by default)
+classifier.push_to_hub("username/model")
 
 # Load automatically uses ONNX on CPU
 fast_classifier = AdaptiveClassifier.load("./model")
+
+# Opt-out if you don't want ONNX export
+classifier.save("./model", include_onnx=False)
 ```
 
 #### Benchmark Your Model
