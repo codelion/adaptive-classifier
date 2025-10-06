@@ -635,6 +635,7 @@ class AdaptiveClassifier(ModelHubMixin):
         local_files_only: bool = False,
         token: Optional[Union[str, bool]] = None,
         use_onnx: Optional[Union[bool, str]] = "auto",
+        prefer_quantized: bool = True,
         **kwargs
     ) -> "AdaptiveClassifier":
         """Load a model from the HuggingFace Hub or local directory.
@@ -1012,6 +1013,10 @@ This model:
             export=True
         )
 
+        # Always save unquantized version first
+        ort_model.save_pretrained(save_directory)
+        logger.info(f"Saved unquantized ONNX model to {save_directory}")
+
         if quantize:
             logger.info(f"Applying {quantization_config} INT8 quantization...")
 
@@ -1026,15 +1031,13 @@ This model:
                 logger.warning(f"Unknown quantization config: {quantization_config}. Using arm64.")
                 qconfig = AutoQuantizationConfig.arm64(is_static=False, per_channel=False)
 
-            # Apply quantization
+            # Apply quantization (saves quantized version alongside unquantized)
             quantizer = ORTQuantizer.from_pretrained(ort_model)
             quantizer.quantize(
                 save_dir=save_directory,
                 quantization_config=qconfig
             )
-        else:
-            # Save without quantization
-            ort_model.save_pretrained(save_directory)
+            logger.info(f"Saved quantized ONNX model to {save_directory}")
 
         logger.info(f"ONNX model exported to {save_directory}")
         return save_directory
