@@ -701,6 +701,41 @@ class AdaptiveClassifier(ModelHubMixin):
                     token=token,
                     local_files_only=local_files_only,
                 )
+
+                # Try to download ONNX files if they exist
+                try:
+                    # Download quantized ONNX model (primary)
+                    hf_hub_download(
+                        repo_id=model_id,
+                        filename="onnx/model_quantized.onnx",
+                        revision=revision,
+                        cache_dir=cache_dir,
+                        force_download=force_download,
+                        proxies=proxies,
+                        resume_download=resume_download,
+                        token=token,
+                        local_files_only=local_files_only,
+                    )
+                    # Download ONNX config files
+                    for onnx_file in ["config.json", "ort_config.json", "tokenizer.json",
+                                      "tokenizer_config.json", "special_tokens_map.json", "vocab.txt"]:
+                        try:
+                            hf_hub_download(
+                                repo_id=model_id,
+                                filename=f"onnx/{onnx_file}",
+                                revision=revision,
+                                cache_dir=cache_dir,
+                                force_download=force_download,
+                                proxies=proxies,
+                                resume_download=resume_download,
+                                token=token,
+                                local_files_only=local_files_only,
+                            )
+                        except:
+                            pass  # Some files might not exist
+                    logger.info("Downloaded ONNX model files from Hub")
+                except Exception as e:
+                    logger.debug(f"ONNX model not available on Hub: {e}")
         except Exception as e:
             raise ValueError(f"Error loading model from {model_id}: {e}")
 
@@ -712,9 +747,9 @@ class AdaptiveClassifier(ModelHubMixin):
         with open(model_path / "examples.json", "r", encoding="utf-8") as f:
             saved_examples = json.load(f)
 
-        # Check if ONNX model exists
+        # Check if ONNX model exists (quantized or unquantized)
         onnx_path = model_path / "onnx"
-        has_onnx = onnx_path.exists() and (onnx_path / "model.onnx").exists()
+        has_onnx = onnx_path.exists() and ((onnx_path / "model_quantized.onnx").exists() or (onnx_path / "model.onnx").exists())
 
         # Determine if we should use ONNX
         final_use_onnx = use_onnx
