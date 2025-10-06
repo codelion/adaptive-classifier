@@ -523,7 +523,7 @@ class AdaptiveClassifier(ModelHubMixin):
         save_directory: Union[str, Path],
         config: Optional[Dict[str, Any]] = None,
         include_onnx: bool = True,
-        quantize_onnx: bool = False,
+        quantize_onnx: bool = True,
         **kwargs
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Save the model to a directory.
@@ -1008,7 +1008,7 @@ This model:
         self,
         repo_id: str,
         include_onnx: bool = True,
-        quantize_onnx: bool = False,
+        quantize_onnx: bool = True,
         **kwargs
     ):
         """Push model to HuggingFace Hub with ONNX export by default.
@@ -1044,7 +1044,7 @@ This model:
             )
 
     # Keep existing save/load methods for backwards compatibility
-    def save(self, save_dir: str, include_onnx: bool = True, quantize_onnx: bool = False):
+    def save(self, save_dir: str, include_onnx: bool = True, quantize_onnx: bool = True):
         """Legacy save method for backwards compatibility.
 
         Args:
