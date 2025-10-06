@@ -60,15 +60,16 @@ def test_save_load(base_classifier, sample_data):
     torch.manual_seed(42)
     np.random.seed(42)
     random.seed(42)
-    
+
     texts, labels = sample_data
     base_classifier.add_examples(texts, labels)
-    
+
     with tempfile.TemporaryDirectory() as tmpdir:
         save_path = Path(tmpdir) / "test_classifier"
-        
-        # Ensure model is in eval mode before saving
-        base_classifier.model.eval()
+
+        # Ensure model is in eval mode before saving (if not ONNX)
+        if not base_classifier.use_onnx and hasattr(base_classifier.model, 'eval'):
+            base_classifier.model.eval()
         if base_classifier.adaptive_head is not None:
             base_classifier.adaptive_head.eval()
         
@@ -81,13 +82,14 @@ def test_save_load(base_classifier, sample_data):
         assert (save_path / "examples.json").exists()
         assert (save_path / "README.md").exists()
         
-        # Load with same device
-        loaded_classifier = AdaptiveClassifier.load(save_path, device=base_classifier.device)
+        # Load with same device (disable ONNX for deterministic comparison)
+        loaded_classifier = AdaptiveClassifier.load(save_path, device=base_classifier.device, use_onnx=False)
         assert loaded_classifier is not None
         assert loaded_classifier.label_to_id == base_classifier.label_to_id
-        
-        # Ensure loaded model is also in eval mode
-        loaded_classifier.model.eval()
+
+        # Ensure loaded model is also in eval mode (if not ONNX)
+        if not loaded_classifier.use_onnx and hasattr(loaded_classifier.model, 'eval'):
+            loaded_classifier.model.eval()
         if loaded_classifier.adaptive_head is not None:
             loaded_classifier.adaptive_head.eval()
         

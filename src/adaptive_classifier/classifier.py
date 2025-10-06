@@ -832,6 +832,17 @@ class AdaptiveClassifier(ModelHubMixin):
             classifier.strategic_optimizer = None
             classifier.strategic_evaluator = None
 
+            # Initialize subclass-specific attributes (e.g., for MultiLabelAdaptiveClassifier)
+            # These will be overwritten if the subclass has its own initialization logic
+            if not hasattr(classifier, 'default_threshold'):
+                classifier.default_threshold = 0.5
+            if not hasattr(classifier, 'min_predictions'):
+                classifier.min_predictions = 1
+            if not hasattr(classifier, 'max_predictions'):
+                classifier.max_predictions = None
+            if not hasattr(classifier, 'label_thresholds'):
+                classifier.label_thresholds = {}
+
             if classifier.config.enable_strategic_mode:
                 classifier._initialize_strategic_components()
         else:
