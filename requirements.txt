@@ -8,3 +8,4 @@ setuptools>=65.0.0
 wheel>=0.40.0
 scikit-learn
 huggingface_hub>=0.17.0
+optimum[onnxruntime]>=1.14.0
