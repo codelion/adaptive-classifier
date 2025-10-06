@@ -221,18 +221,30 @@ predictions = classifier.predict("Fast inference!")
 #### Save & Deploy with ONNX
 
 ```python
-# Save with ONNX export (included by default)
+# Save with ONNX export (both quantized & unquantized versions)
 classifier.save("./model")
 
-# Push to Hub with ONNX (included by default)
+# Push to Hub with ONNX (both versions included by default)
 classifier.push_to_hub("username/model")
 
-# Load automatically uses ONNX on CPU
+# Load automatically uses quantized ONNX on CPU (fastest, 4x smaller)
 fast_classifier = AdaptiveClassifier.load("./model")
 
-# Opt-out if you don't want ONNX export
+# Choose unquantized ONNX for maximum accuracy
+accurate_classifier = AdaptiveClassifier.load("./model", prefer_quantized=False)
+
+# Force PyTorch (no ONNX)
+pytorch_classifier = AdaptiveClassifier.load("./model", use_onnx=False)
+
+# Opt-out of ONNX export when saving
 classifier.save("./model", include_onnx=False)
 ```
+
+**ONNX Model Versions:**
+- **Quantized (default)**: INT8 quantized, 4x smaller, ~1.14x faster on ARM, 2-4x faster on x86
+- **Unquantized**: Full precision, maximum accuracy, larger file size
+
+By default, models are saved with both versions, and the quantized version is automatically loaded for best performance. Use `prefer_quantized=False` if you need maximum accuracy.
 
 #### Benchmark Your Model
 

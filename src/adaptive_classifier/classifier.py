@@ -650,10 +650,22 @@ class AdaptiveClassifier(ModelHubMixin):
             local_files_only: Use local files only, don't download
             token: Authentication token for Hub
             use_onnx: Whether to use ONNX Runtime ("auto", True, False)
+            prefer_quantized: Use quantized ONNX model if available (default: True)
+                             Set to False to use unquantized model for maximum accuracy
             **kwargs: Additional arguments passed to from_pretrained
 
         Returns:
             Loaded AdaptiveClassifier instance
+
+        Examples:
+            >>> # Load with quantized ONNX (default - faster, smaller)
+            >>> classifier = AdaptiveClassifier.load("adaptive-classifier/llm-router")
+            >>>
+            >>> # Load with unquantized ONNX (maximum accuracy)
+            >>> classifier = AdaptiveClassifier.load("adaptive-classifier/llm-router", prefer_quantized=False)
+            >>>
+            >>> # Force PyTorch (no ONNX)
+            >>> classifier = AdaptiveClassifier.load("adaptive-classifier/llm-router", use_onnx=False)
         """
        
         # Check if model_id is a local directory
@@ -781,8 +793,28 @@ class AdaptiveClassifier(ModelHubMixin):
             classifier.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
             classifier.use_onnx = True
 
-            # Load ONNX model
-            classifier.model = ORTModelForFeatureExtraction.from_pretrained(onnx_path)
+            # Load ONNX model (prefer quantized by default)
+            # Check which ONNX files exist
+            has_quantized = (onnx_path / "model_quantized.onnx").exists()
+            has_unquantized = (onnx_path / "model.onnx").exists()
+
+            # Determine which file to load
+            if prefer_quantized and has_quantized:
+                onnx_file = "model_quantized.onnx"
+                logger.info("Loading quantized ONNX model for optimal performance")
+            elif has_unquantized:
+                onnx_file = "model.onnx"
+                logger.info("Loading unquantized ONNX model")
+            elif has_quantized:
+                onnx_file = "model_quantized.onnx"
+                logger.info("Loading quantized ONNX model (only version available)")
+            else:
+                raise ValueError(f"No ONNX model files found in {onnx_path}")
+
+            classifier.model = ORTModelForFeatureExtraction.from_pretrained(
+                onnx_path,
+                file_name=onnx_file
+            )
             classifier.tokenizer = AutoTokenizer.from_pretrained(config_dict['model_name'])
 
             # Initialize memory and other components
@@ -1133,18 +1165,19 @@ This model:
         )
 
     @classmethod
-    def load(cls, save_dir: str, device: Optional[str] = None, use_onnx: Optional[Union[bool, str]] = "auto") -> 'AdaptiveClassifier':
+    def load(cls, save_dir: str, device: Optional[str] = None, use_onnx: Optional[Union[bool, str]] = "auto", prefer_quantized: bool = True) -> 'AdaptiveClassifier':
         """Legacy load method for backwards compatibility.
 
         Args:
             save_dir: Directory to load from
             device: Device to load model on
-            use_onnx: Whether to use ONNX ("auto", True, False)
+            use_onnx: Whether to use ONNX Runtime ("auto", True, False)
+            prefer_quantized: Use quantized ONNX model if available (default: True)
         """
         kwargs = {}
         if device is not None:
             kwargs['device'] = device
-        return cls._from_pretrained(save_dir, use_onnx=use_onnx, **kwargs)
+        return cls._from_pretrained(save_dir, use_onnx=use_onnx, prefer_quantized=prefer_quantized, **kwargs)
     
     def to(self, device: str) -> 'AdaptiveClassifier':
         """Move the model to specified device.
