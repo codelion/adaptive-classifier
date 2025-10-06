@@ -30,9 +30,10 @@ Adaptive Classifier is a PyTorch-based machine learning library that revolutioni
 
 ### 🎯 **Core Capabilities**
 - **🚀 Universal Compatibility** - Works with any HuggingFace transformer model
+- **⚡ Optimized Inference** - Built-in ONNX Runtime for 2-4x faster CPU predictions
 - **📈 Continuous Learning** - Add new examples without catastrophic forgetting
 - **🔄 Dynamic Classes** - Add new classes at runtime without retraining
-- **⚡ Zero Downtime** - Update models in production without service interruption
+- **⏱️ Zero Downtime** - Update models in production without service interruption
 
 ### 🛡️ **Advanced Defense**
 - **🎮 Strategic Classification** - Game-theoretic defense against adversarial manipulation
@@ -98,6 +99,8 @@ Tested on arena-hard-auto-v0.1 dataset (500 queries):
 ```bash
 pip install adaptive-classifier
 ```
+
+**Includes:** ONNX Runtime for 2-4x faster CPU inference out-of-the-box
 
 ### 🛠️ Development Setup
 ```bash
@@ -190,6 +193,74 @@ strategic_classifier = AdaptiveClassifier("bert-base-uncased", config=config)
 predictions = strategic_classifier.predict("This product has amazing quality features!")
 # Returns predictions that consider potential gaming attempts
 ```
+
+### ⚡ Optimized CPU Inference with ONNX
+
+Adaptive Classifier includes **built-in ONNX Runtime support** for **2-4x faster CPU inference** with zero code changes required.
+
+#### Automatic Optimization (Default)
+
+ONNX Runtime is automatically used on CPU for optimal performance:
+
+```python
+# Automatically uses ONNX on CPU, PyTorch on GPU
+classifier = AdaptiveClassifier("bert-base-uncased")
+
+# That's it! Predictions are 2-4x faster on CPU
+predictions = classifier.predict("Fast inference!")
+```
+
+#### Performance Comparison
+
+| Configuration | Speed | Use Case |
+|--------------|-------|----------|
+| PyTorch (GPU) | Fastest | GPU servers |
+| **ONNX (CPU)** | **2-4x faster** | **Production CPU deployments** |
+| PyTorch (CPU) | Baseline | Development, training |
+
+#### Save & Deploy with ONNX
+
+```python
+# Save with ONNX export (both quantized & unquantized versions)
+classifier.save("./model")
+
+# Push to Hub with ONNX (both versions included by default)
+classifier.push_to_hub("username/model")
+
+# Load automatically uses quantized ONNX on CPU (fastest, 4x smaller)
+fast_classifier = AdaptiveClassifier.load("./model")
+
+# Choose unquantized ONNX for maximum accuracy
+accurate_classifier = AdaptiveClassifier.load("./model", prefer_quantized=False)
+
+# Force PyTorch (no ONNX)
+pytorch_classifier = AdaptiveClassifier.load("./model", use_onnx=False)
+
+# Opt-out of ONNX export when saving
+classifier.save("./model", include_onnx=False)
+```
+
+**ONNX Model Versions:**
+- **Quantized (default)**: INT8 quantized, 4x smaller, ~1.14x faster on ARM, 2-4x faster on x86
+- **Unquantized**: Full precision, maximum accuracy, larger file size
+
+By default, models are saved with both versions, and the quantized version is automatically loaded for best performance. Use `prefer_quantized=False` if you need maximum accuracy.
+
+#### Benchmark Your Model
+
+```bash
+# Compare PyTorch vs ONNX performance
+python scripts/benchmark_onnx.py --model bert-base-uncased --runs 100
+```
+
+**Example Results:**
+```
+Model: bert-base-uncased (CPU)
+PyTorch:  8.3ms/query  (baseline)
+ONNX:     2.1ms/query  (4.0x faster) ✓
+```
+
+> **Note:** ONNX optimization is included by default. For GPU inference, PyTorch is automatically used for best performance.
 
 ## Advanced Usage
 

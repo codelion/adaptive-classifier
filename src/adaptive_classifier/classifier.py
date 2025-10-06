@@ -32,22 +32,53 @@ class AdaptiveClassifier(ModelHubMixin):
         model_name: str,
         device: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
-        seed: int = 42  # Add seed parameter
+        seed: int = 42,  # Add seed parameter
+        use_onnx: Optional[Union[bool, str]] = "auto"  # "auto", True, False
     ):
         """Initialize the adaptive classifier.
-        
+
         Args:
             model_name: Name of the HuggingFace transformer model
             device: Device to run the model on (default: auto-detect)
             config: Optional configuration dictionary
+            seed: Random seed for initialization
+            use_onnx: Whether to use ONNX Runtime ("auto", True, False).
+                     "auto" uses ONNX on CPU, PyTorch on GPU.
         """
         # Set seed for initialization
         torch.manual_seed(seed)
         self.config = ModelConfig(config)
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        
+
+        # Determine if we should use ONNX
+        self.use_onnx = self._should_use_onnx(use_onnx)
+
         # Initialize transformer model and tokenizer
-        self.model = AutoModel.from_pretrained(model_name).to(self.device)
+        if self.use_onnx:
+            try:
+                from optimum.onnxruntime import ORTModelForFeatureExtraction
+                logger.info(f"Initializing ONNX model for {model_name}")
+                self.model = ORTModelForFeatureExtraction.from_pretrained(
+                    model_name,
+                    export=True  # Auto-export to ONNX if not already in ONNX format
+                )
+                logger.info("Successfully loaded ONNX model")
+            except ImportError:
+                logger.warning(
+                    "optimum[onnxruntime] not installed. Falling back to PyTorch. "
+                    "Install with: pip install optimum[onnxruntime]"
+                )
+                self.use_onnx = False
+                self.model = AutoModel.from_pretrained(model_name).to(self.device)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load ONNX model: {e}. Falling back to PyTorch."
+                )
+                self.use_onnx = False
+                self.model = AutoModel.from_pretrained(model_name).to(self.device)
+        else:
+            self.model = AutoModel.from_pretrained(model_name).to(self.device)
+
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         
         # Initialize memory system
@@ -76,7 +107,25 @@ class AdaptiveClassifier(ModelHubMixin):
         # Initialize strategic components if enabled
         if self.config.enable_strategic_mode:
             self._initialize_strategic_components()
-    
+
+    def _should_use_onnx(self, use_onnx: Union[bool, str]) -> bool:
+        """Determine if ONNX should be used based on configuration and device.
+
+        Args:
+            use_onnx: User preference ("auto", True, False)
+
+        Returns:
+            True if ONNX should be used, False otherwise
+        """
+        if use_onnx == "auto":
+            # Auto-detect: Use ONNX on CPU, PyTorch on GPU
+            return self.device == "cpu"
+        elif isinstance(use_onnx, bool):
+            return use_onnx
+        else:
+            logger.warning(f"Invalid use_onnx value: {use_onnx}. Using auto-detection.")
+            return self.device == "cpu"
+
     def add_examples(self, texts: List[str], labels: List[str]):
         """Add new examples with special handling for new classes."""
         if not texts or not labels:
@@ -473,15 +522,19 @@ class AdaptiveClassifier(ModelHubMixin):
         self,
         save_directory: Union[str, Path],
         config: Optional[Dict[str, Any]] = None,
+        include_onnx: bool = True,
+        quantize_onnx: bool = True,
         **kwargs
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Save the model to a directory.
-        
+
         Args:
             save_directory: Directory to save the model to
             config: Optional additional configuration
+            include_onnx: Whether to include ONNX export (default: True)
+            quantize_onnx: Whether to quantize ONNX model (requires include_onnx=True)
             **kwargs: Additional arguments passed to save_pretrained
-            
+
         Returns:
             Tuple of (dict of filenames, dict of objects to save)
         """
@@ -540,6 +593,23 @@ class AdaptiveClassifier(ModelHubMixin):
             with open(model_card_path, "w", encoding="utf-8") as f:
                 f.write(model_card_content)
 
+        # Export ONNX if requested
+        if include_onnx:
+            try:
+                onnx_dir = save_directory / "onnx"
+                self.export_onnx(
+                    onnx_dir,
+                    quantize=quantize_onnx
+                )
+                logger.info(f"ONNX model exported to {onnx_dir}")
+            except ImportError:
+                logger.warning(
+                    "Skipping ONNX export: optimum[onnxruntime] not installed. "
+                    "Install with: pip install optimum[onnxruntime]"
+                )
+            except Exception as e:
+                logger.warning(f"Skipping ONNX export due to error: {e}")
+
         # Return files that were created
         saved_files = {
             "config": config_file.name,
@@ -547,6 +617,9 @@ class AdaptiveClassifier(ModelHubMixin):
             "model": tensors_file.name,
             "model_card": model_card_path.name,
         }
+
+        if include_onnx and (save_directory / "onnx").exists():
+            saved_files["onnx"] = "onnx/"
 
         return saved_files, {}
 
@@ -561,10 +634,12 @@ class AdaptiveClassifier(ModelHubMixin):
         resume_download: bool = False,
         local_files_only: bool = False,
         token: Optional[Union[str, bool]] = None,
+        use_onnx: Optional[Union[bool, str]] = "auto",
+        prefer_quantized: bool = True,
         **kwargs
     ) -> "AdaptiveClassifier":
         """Load a model from the HuggingFace Hub or local directory.
-        
+
         Args:
             model_id: HuggingFace Hub model ID or path to local directory
             revision: Revision of the model on the Hub
@@ -574,10 +649,23 @@ class AdaptiveClassifier(ModelHubMixin):
             resume_download: Resume downloading if interrupted
             local_files_only: Use local files only, don't download
             token: Authentication token for Hub
+            use_onnx: Whether to use ONNX Runtime ("auto", True, False)
+            prefer_quantized: Use quantized ONNX model if available (default: True)
+                             Set to False to use unquantized model for maximum accuracy
             **kwargs: Additional arguments passed to from_pretrained
-            
+
         Returns:
             Loaded AdaptiveClassifier instance
+
+        Examples:
+            >>> # Load with quantized ONNX (default - faster, smaller)
+            >>> classifier = AdaptiveClassifier.load("adaptive-classifier/llm-router")
+            >>>
+            >>> # Load with unquantized ONNX (maximum accuracy)
+            >>> classifier = AdaptiveClassifier.load("adaptive-classifier/llm-router", prefer_quantized=False)
+            >>>
+            >>> # Force PyTorch (no ONNX)
+            >>> classifier = AdaptiveClassifier.load("adaptive-classifier/llm-router", use_onnx=False)
         """
        
         # Check if model_id is a local directory
@@ -626,6 +714,41 @@ class AdaptiveClassifier(ModelHubMixin):
                     token=token,
                     local_files_only=local_files_only,
                 )
+
+                # Try to download ONNX files if they exist
+                try:
+                    # Download quantized ONNX model (primary)
+                    hf_hub_download(
+                        repo_id=model_id,
+                        filename="onnx/model_quantized.onnx",
+                        revision=revision,
+                        cache_dir=cache_dir,
+                        force_download=force_download,
+                        proxies=proxies,
+                        resume_download=resume_download,
+                        token=token,
+                        local_files_only=local_files_only,
+                    )
+                    # Download ONNX config files
+                    for onnx_file in ["config.json", "ort_config.json", "tokenizer.json",
+                                      "tokenizer_config.json", "special_tokens_map.json", "vocab.txt"]:
+                        try:
+                            hf_hub_download(
+                                repo_id=model_id,
+                                filename=f"onnx/{onnx_file}",
+                                revision=revision,
+                                cache_dir=cache_dir,
+                                force_download=force_download,
+                                proxies=proxies,
+                                resume_download=resume_download,
+                                token=token,
+                                local_files_only=local_files_only,
+                            )
+                        except:
+                            pass  # Some files might not exist
+                    logger.info("Downloaded ONNX model files from Hub")
+                except Exception as e:
+                    logger.debug(f"ONNX model not available on Hub: {e}")
         except Exception as e:
             raise ValueError(f"Error loading model from {model_id}: {e}")
 
@@ -637,13 +760,99 @@ class AdaptiveClassifier(ModelHubMixin):
         with open(model_path / "examples.json", "r", encoding="utf-8") as f:
             saved_examples = json.load(f)
 
+        # Check if ONNX model exists (quantized or unquantized)
+        onnx_path = model_path / "onnx"
+        has_onnx = onnx_path.exists() and ((onnx_path / "model_quantized.onnx").exists() or (onnx_path / "model.onnx").exists())
+
+        # Determine if we should use ONNX
+        final_use_onnx = use_onnx
+        if use_onnx == "auto":
+            device = kwargs.get("device", None) or ("cuda" if torch.cuda.is_available() else "cpu")
+            # Use ONNX if available and on CPU
+            final_use_onnx = has_onnx and device == "cpu"
+        elif use_onnx is True and not has_onnx:
+            logger.warning(
+                "ONNX model requested but not found in save directory. "
+                "Loading PyTorch model instead."
+            )
+            final_use_onnx = False
+
         # Initialize classifier
         device = kwargs.get("device", None)
-        classifier = cls(
-            config_dict['model_name'],
-            device=device,
-            config=config_dict.get('config', None)
-        )
+
+        # If loading ONNX from save directory, use a special path
+        if final_use_onnx and has_onnx:
+            # Load ONNX model from saved onnx directory
+            from optimum.onnxruntime import ORTModelForFeatureExtraction
+            logger.info(f"Loading ONNX model from {onnx_path}")
+
+            # Create a temporary classifier with ONNX disabled first
+            classifier = cls.__new__(cls)
+            torch.manual_seed(42)
+            classifier.config = ModelConfig(config_dict.get('config', None))
+            classifier.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+            classifier.use_onnx = True
+
+            # Load ONNX model (prefer quantized by default)
+            # Check which ONNX files exist
+            has_quantized = (onnx_path / "model_quantized.onnx").exists()
+            has_unquantized = (onnx_path / "model.onnx").exists()
+
+            # Determine which file to load
+            if prefer_quantized and has_quantized:
+                onnx_file = "model_quantized.onnx"
+                logger.info("Loading quantized ONNX model for optimal performance")
+            elif has_unquantized:
+                onnx_file = "model.onnx"
+                logger.info("Loading unquantized ONNX model")
+            elif has_quantized:
+                onnx_file = "model_quantized.onnx"
+                logger.info("Loading quantized ONNX model (only version available)")
+            else:
+                raise ValueError(f"No ONNX model files found in {onnx_path}")
+
+            classifier.model = ORTModelForFeatureExtraction.from_pretrained(
+                onnx_path,
+                file_name=onnx_file
+            )
+            classifier.tokenizer = AutoTokenizer.from_pretrained(config_dict['model_name'])
+
+            # Initialize memory and other components
+            classifier.embedding_dim = classifier.model.config.hidden_size
+            classifier.memory = PrototypeMemory(
+                classifier.embedding_dim,
+                config=classifier.config
+            )
+            classifier.adaptive_head = None
+            classifier.label_to_id = {}
+            classifier.id_to_label = {}
+            classifier.train_steps = 0
+            classifier.training_history = {}
+            classifier.strategic_cost_function = None
+            classifier.strategic_optimizer = None
+            classifier.strategic_evaluator = None
+
+            # Initialize subclass-specific attributes (e.g., for MultiLabelAdaptiveClassifier)
+            # These will be overwritten if the subclass has its own initialization logic
+            if not hasattr(classifier, 'default_threshold'):
+                classifier.default_threshold = 0.5
+            if not hasattr(classifier, 'min_predictions'):
+                classifier.min_predictions = 1
+            if not hasattr(classifier, 'max_predictions'):
+                classifier.max_predictions = None
+            if not hasattr(classifier, 'label_thresholds'):
+                classifier.label_thresholds = {}
+
+            if classifier.config.enable_strategic_mode:
+                classifier._initialize_strategic_components()
+        else:
+            # Standard initialization
+            classifier = cls(
+                config_dict['model_name'],
+                device=device,
+                config=config_dict.get('config', None),
+                use_onnx=final_use_onnx if isinstance(final_use_onnx, bool) else False
+            )
 
         # Restore label mappings
         classifier.label_to_id = config_dict['label_to_id']
@@ -798,18 +1007,188 @@ This model:
             
         return "\n".join(lines)
 
+    def export_onnx(
+        self,
+        save_directory: Union[str, Path],
+        quantize: bool = False,
+        quantization_config: Optional[str] = "arm64"
+    ) -> Path:
+        """Export the transformer model to ONNX format.
+
+        Args:
+            save_directory: Directory to save ONNX model
+            quantize: Whether to apply INT8 quantization
+            quantization_config: Quantization configuration ("arm64", "avx512", "avx2")
+
+        Returns:
+            Path to the saved ONNX model directory
+
+        Raises:
+            ImportError: If optimum[onnxruntime] is not installed
+            ValueError: If model is already in ONNX format
+        """
+        try:
+            from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTQuantizer
+            from optimum.onnxruntime.configuration import AutoQuantizationConfig
+        except ImportError:
+            raise ImportError(
+                "optimum[onnxruntime] is required for ONNX export. "
+                "Install with: pip install optimum[onnxruntime]"
+            )
+
+        save_directory = Path(save_directory)
+        save_directory.mkdir(parents=True, exist_ok=True)
+
+        # Check if already ONNX
+        if self.use_onnx:
+            logger.warning("Model is already in ONNX format. Saving current model.")
+            self.model.save_pretrained(save_directory)
+            return save_directory
+
+        # Get the base model name
+        model_name = self.model.config._name_or_path
+
+        logger.info(f"Exporting {model_name} to ONNX format...")
+
+        # Export PyTorch model to ONNX
+        ort_model = ORTModelForFeatureExtraction.from_pretrained(
+            model_name,
+            export=True
+        )
+
+        # Always save unquantized version first
+        ort_model.save_pretrained(save_directory)
+        logger.info(f"Saved unquantized ONNX model to {save_directory}")
+
+        if quantize:
+            logger.info(f"Applying {quantization_config} INT8 quantization...")
+
+            # Select quantization config
+            if quantization_config == "arm64":
+                qconfig = AutoQuantizationConfig.arm64(is_static=False, per_channel=False)
+            elif quantization_config == "avx512":
+                qconfig = AutoQuantizationConfig.avx512(is_static=False, per_channel=False)
+            elif quantization_config == "avx2":
+                qconfig = AutoQuantizationConfig.avx2(is_static=False, per_channel=False)
+            else:
+                logger.warning(f"Unknown quantization config: {quantization_config}. Using arm64.")
+                qconfig = AutoQuantizationConfig.arm64(is_static=False, per_channel=False)
+
+            # Apply quantization (saves quantized version alongside unquantized)
+            quantizer = ORTQuantizer.from_pretrained(ort_model)
+            quantizer.quantize(
+                save_dir=save_directory,
+                quantization_config=qconfig
+            )
+            logger.info(f"Saved quantized ONNX model to {save_directory}")
+
+        logger.info(f"ONNX model exported to {save_directory}")
+        return save_directory
+
+    def push_to_hub(
+        self,
+        repo_id: str,
+        include_onnx: bool = True,
+        quantize_onnx: bool = True,
+        token: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        private: bool = False,
+        **kwargs
+    ):
+        """Push model to HuggingFace Hub with ONNX export by default.
+
+        Args:
+            repo_id: Repository ID on HuggingFace Hub (e.g., "username/model-name")
+            include_onnx: Whether to include ONNX version of the model (default: True)
+            quantize_onnx: Whether to quantize the ONNX model (requires include_onnx=True)
+            token: HuggingFace Hub authentication token (or set HF_TOKEN env var)
+            commit_message: Commit message for the push
+            private: Whether to create a private repository
+            **kwargs: Additional arguments passed to HfApi.upload_folder
+
+        Examples:
+            >>> classifier.push_to_hub("my-org/my-classifier")  # ONNX included by default
+            >>> classifier.push_to_hub("my-org/my-classifier", quantize_onnx=True)
+            >>> classifier.push_to_hub("my-org/my-classifier", include_onnx=False)  # Opt-out
+        """
+        import tempfile
+        import os
+        from huggingface_hub import HfApi
+
+        # Get token from parameter or environment
+        token = token or os.environ.get("HF_TOKEN")
+        if not token:
+            logger.warning(
+                "No HuggingFace token provided. Set HF_TOKEN environment variable or pass token parameter. "
+                "You may need to login with `huggingface-cli login`"
+            )
+
+        # Create temporary directory for saving
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = Path(tmpdir)
+
+            # Save model with optional ONNX
+            self._save_pretrained(
+                save_path,
+                include_onnx=include_onnx,
+                quantize_onnx=quantize_onnx
+            )
+
+            # Use HfApi to upload the folder directly
+            api = HfApi()
+
+            # Create repo if it doesn't exist
+            try:
+                api.create_repo(
+                    repo_id=repo_id,
+                    token=token,
+                    private=private,
+                    exist_ok=True
+                )
+            except Exception as e:
+                logger.warning(f"Could not create repo (may already exist): {e}")
+
+            # Upload all files from the temp directory
+            commit_info = api.upload_folder(
+                folder_path=str(save_path),
+                repo_id=repo_id,
+                token=token,
+                commit_message=commit_message or "Upload model with adaptive-classifier",
+                **kwargs
+            )
+
+            logger.info(f"Successfully pushed model to https://huggingface.co/{repo_id}")
+            return f"https://huggingface.co/{repo_id}"
+
     # Keep existing save/load methods for backwards compatibility
-    def save(self, save_dir: str):
-        """Legacy save method for backwards compatibility."""
-        return self._save_pretrained(save_dir)
+    def save(self, save_dir: str, include_onnx: bool = True, quantize_onnx: bool = True):
+        """Legacy save method for backwards compatibility.
+
+        Args:
+            save_dir: Directory to save to
+            include_onnx: Whether to include ONNX export (default: True)
+            quantize_onnx: Whether to quantize ONNX model
+        """
+        return self._save_pretrained(
+            save_dir,
+            include_onnx=include_onnx,
+            quantize_onnx=quantize_onnx
+        )
 
     @classmethod
-    def load(cls, save_dir: str, device: Optional[str] = None) -> 'AdaptiveClassifier':
-        """Legacy load method for backwards compatibility."""
+    def load(cls, save_dir: str, device: Optional[str] = None, use_onnx: Optional[Union[bool, str]] = "auto", prefer_quantized: bool = True) -> 'AdaptiveClassifier':
+        """Legacy load method for backwards compatibility.
+
+        Args:
+            save_dir: Directory to load from
+            device: Device to load model on
+            use_onnx: Whether to use ONNX Runtime ("auto", True, False)
+            prefer_quantized: Use quantized ONNX model if available (default: True)
+        """
         kwargs = {}
         if device is not None:
             kwargs['device'] = device
-        return cls._from_pretrained(save_dir, **kwargs)
+        return cls._from_pretrained(save_dir, use_onnx=use_onnx, prefer_quantized=prefer_quantized, **kwargs)
     
     def to(self, device: str) -> 'AdaptiveClassifier':
         """Move the model to specified device.
@@ -847,10 +1226,12 @@ This model:
 
     def _get_embeddings(self, texts: List[str]) -> List[torch.Tensor]:
         """Get embeddings for input texts."""
-        # Temporarily set model to eval mode
-        was_training = self.model.training
-        self.model.eval()
-        
+        # Temporarily set model to eval mode (only for PyTorch models)
+        was_training = False
+        if not self.use_onnx and hasattr(self.model, 'training'):
+            was_training = self.model.training
+            self.model.eval()
+
         # Get embeddings
         with torch.no_grad():
             inputs = self.tokenizer(
@@ -859,18 +1240,22 @@ This model:
                 truncation=True,
                 padding=True,
                 return_tensors="pt"
-            ).to(self.device)
-            
+            )
+
+            # For ONNX models, inputs don't need to be moved to device
+            if not self.use_onnx:
+                inputs = inputs.to(self.device)
+
             outputs = self.model(**inputs)
             embeddings = outputs.last_hidden_state[:, 0, :]
-            
+
             # Normalize embeddings
             embeddings = F.normalize(embeddings, p=2, dim=1)
-        
-        # Restore original training mode
-        if was_training:
+
+        # Restore original training mode (only for PyTorch models)
+        if was_training and hasattr(self.model, 'train'):
             self.model.train()
-        
+
         # Return embeddings as list
         return [emb.cpu() for emb in embeddings]
 
