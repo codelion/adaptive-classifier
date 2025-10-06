@@ -1044,6 +1044,9 @@ This model:
         repo_id: str,
         include_onnx: bool = True,
         quantize_onnx: bool = True,
+        token: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        private: bool = False,
         **kwargs
     ):
         """Push model to HuggingFace Hub with ONNX export by default.
@@ -1052,7 +1055,10 @@ This model:
             repo_id: Repository ID on HuggingFace Hub (e.g., "username/model-name")
             include_onnx: Whether to include ONNX version of the model (default: True)
             quantize_onnx: Whether to quantize the ONNX model (requires include_onnx=True)
-            **kwargs: Additional arguments passed to ModelHub push_to_hub
+            token: HuggingFace Hub authentication token (or set HF_TOKEN env var)
+            commit_message: Commit message for the push
+            private: Whether to create a private repository
+            **kwargs: Additional arguments passed to HfApi.upload_folder
 
         Examples:
             >>> classifier.push_to_hub("my-org/my-classifier")  # ONNX included by default
@@ -1060,6 +1066,16 @@ This model:
             >>> classifier.push_to_hub("my-org/my-classifier", include_onnx=False)  # Opt-out
         """
         import tempfile
+        import os
+        from huggingface_hub import HfApi
+
+        # Get token from parameter or environment
+        token = token or os.environ.get("HF_TOKEN")
+        if not token:
+            logger.warning(
+                "No HuggingFace token provided. Set HF_TOKEN environment variable or pass token parameter. "
+                "You may need to login with `huggingface-cli login`"
+            )
 
         # Create temporary directory for saving
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1072,11 +1088,31 @@ This model:
                 quantize_onnx=quantize_onnx
             )
 
-            # Use parent class push_to_hub to upload all files
-            super().push_to_hub(
+            # Use HfApi to upload the folder directly
+            api = HfApi()
+
+            # Create repo if it doesn't exist
+            try:
+                api.create_repo(
+                    repo_id=repo_id,
+                    token=token,
+                    private=private,
+                    exist_ok=True
+                )
+            except Exception as e:
+                logger.warning(f"Could not create repo (may already exist): {e}")
+
+            # Upload all files from the temp directory
+            commit_info = api.upload_folder(
+                folder_path=str(save_path),
                 repo_id=repo_id,
+                token=token,
+                commit_message=commit_message or "Upload model with adaptive-classifier",
                 **kwargs
             )
+
+            logger.info(f"Successfully pushed model to https://huggingface.co/{repo_id}")
+            return f"https://huggingface.co/{repo_id}"
 
     # Keep existing save/load methods for backwards compatibility
     def save(self, save_dir: str, include_onnx: bool = True, quantize_onnx: bool = True):
