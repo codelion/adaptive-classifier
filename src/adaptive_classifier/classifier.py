@@ -33,7 +33,8 @@ class AdaptiveClassifier(ModelHubMixin):
         device: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         seed: int = 42,  # Add seed parameter
-        use_onnx: Optional[Union[bool, str]] = "auto"  # "auto", True, False
+        use_onnx: Optional[Union[bool, str]] = "auto",  # "auto", True, False
+        trust_remote_code: bool = False
     ):
         """Initialize the adaptive classifier.
 
@@ -44,6 +45,7 @@ class AdaptiveClassifier(ModelHubMixin):
             seed: Random seed for initialization
             use_onnx: Whether to use ONNX Runtime ("auto", True, False).
                      "auto" uses ONNX on CPU, PyTorch on GPU.
+            trust_remote_code: Whether to trust remote code when loading models (default: False)
         """
         # Set seed for initialization
         torch.manual_seed(seed)
