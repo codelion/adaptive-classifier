@@ -549,7 +549,8 @@ class AdaptiveClassifier(ModelHubMixin):
             'id_to_label': {str(k): v for k, v in self.id_to_label.items()},
             'train_steps': self.train_steps,
             'training_history': self.training_history,  # Save cumulative training counts
-            'config': self.config.to_dict()
+            'config': self.config.to_dict(),
+            'library_name': 'adaptive-classifier'  # Tell HuggingFace Hub this requires the adaptive-classifier library
         }
 
         # Save examples in a separate file to keep config clean
@@ -924,7 +925,13 @@ license: apache-2.0
 
 This model is an instance of an [adaptive-classifier](https://github.com/codelion/adaptive-classifier) that allows for continuous learning and dynamic class addition.
 
-You can install it with `pip install adaptive-classifier`.
+## Installation
+
+**IMPORTANT:** To use this model, you must first install the `adaptive-classifier` library. You do **NOT** need `trust_remote_code=True`.
+
+```bash
+pip install adaptive-classifier
+```
 
 ## Model Details
 
@@ -941,10 +948,12 @@ You can install it with `pip install adaptive-classifier`.
 
 ## Usage
 
+After installing the `adaptive-classifier` library, you can load and use this model:
+
 ```python
 from adaptive_classifier import AdaptiveClassifier
 
-# Load the model
+# Load the model (no trust_remote_code needed!)
 classifier = AdaptiveClassifier.from_pretrained("adaptive-classifier/model-name")
 
 # Make predictions
@@ -952,11 +961,13 @@ text = "Your text here"
 predictions = classifier.predict(text)
 print(predictions)  # List of (label, confidence) tuples
 
-# Add new examples
+# Add new examples for continuous learning
 texts = ["Example 1", "Example 2"]
 labels = ["class1", "class2"]
 classifier.add_examples(texts, labels)
 ```
+
+**Note:** This model uses the `adaptive-classifier` library distributed via PyPI. You do **NOT** need to set `trust_remote_code=True` - just install the library first.
 
 ## Training Details
 

@@ -4,7 +4,7 @@ from .memory import PrototypeMemory
 from .multilabel import MultiLabelAdaptiveClassifier, MultiLabelAdaptiveHead
 from huggingface_hub import ModelHubMixin
 
-__version__ = "0.0.19"
+__version__ = "0.1.1"
 
 __all__ = [
     "AdaptiveClassifier",
