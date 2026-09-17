@@ -110,6 +110,16 @@ class ModelConfig:
         
         # Model settings
         self.max_length = self.config.get('max_length', 512)
+        # How token embeddings are reduced to one vector per text.
+        #   'auto' - use the pooling the model was trained with, read from its
+        #            sentence-transformers 1_Pooling/config.json when present,
+        #            falling back to mean.
+        #   'mean' - attention-masked mean over tokens.
+        #   'cls'  - the first token only.
+        # 'cls' was the only behaviour before 0.2.0. It is wrong for most
+        # encoders: all-MiniLM-L6-v2 is a mean-pooling model, and a masked LM
+        # never trains its CLS token as a sentence representation at all.
+        self.pooling = self.config.get('pooling', 'auto')
         self.batch_size = self.config.get('batch_size', 32)
         self.learning_rate = self.config.get('learning_rate', 0.001)
         self.warmup_steps = self.config.get('warmup_steps', 0)
@@ -128,9 +138,18 @@ class ModelConfig:
         self.early_stopping_patience = self.config.get('early_stopping_patience', 3)
         self.min_examples_per_class = self.config.get('min_examples_per_class', 3)
         
-        # Prediction settings
+        # Prediction settings. Prototype and neural scores are mixed with these
+        # weights. Before 0.2.0 both keys existed but were ignored: every
+        # prediction path hardcoded 0.7/0.3. The right value is not universal --
+        # it depends on how well the encoder separates the classes -- so it has
+        # to be a knob that works.
         self.prototype_weight = self.config.get('prototype_weight', 0.7)
         self.neural_weight = self.config.get('neural_weight', 0.3)
+        # A class with few examples has an unreliable prototype, so the neural
+        # head is trusted more until the class is established.
+        self.new_class_example_threshold = self.config.get('new_class_example_threshold', 10)
+        self.new_class_prototype_weight = self.config.get('new_class_prototype_weight', 0.3)
+        self.new_class_neural_weight = self.config.get('new_class_neural_weight', 0.7)
         self.min_confidence = self.config.get('min_confidence', 0.1)
         
         # Device settings
@@ -165,6 +184,7 @@ class ModelConfig:
         """Convert configuration to dictionary."""
         return {
             'max_length': self.max_length,
+            'pooling': self.pooling,
             'batch_size': self.batch_size,
             'learning_rate': self.learning_rate,
             'warmup_steps': self.warmup_steps,
@@ -178,6 +198,9 @@ class ModelConfig:
             'min_examples_per_class': self.min_examples_per_class,
             'prototype_weight': self.prototype_weight,
             'neural_weight': self.neural_weight,
+            'new_class_example_threshold': self.new_class_example_threshold,
+            'new_class_prototype_weight': self.new_class_prototype_weight,
+            'new_class_neural_weight': self.new_class_neural_weight,
             'min_confidence': self.min_confidence,
             'device_map': self.device_map,
             'quantization': self.quantization,

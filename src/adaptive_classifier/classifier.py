@@ -50,6 +50,8 @@ class AdaptiveClassifier(ModelHubMixin):
         # Set seed for initialization
         torch.manual_seed(seed)
         self.config = ModelConfig(config)
+        self._model_name = model_name
+        self._resolved_pooling = None
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         # Determine if we should use ONNX
@@ -446,25 +448,13 @@ class AdaptiveClassifier(ModelHubMixin):
         # Combine predictions with adjusted weights
         combined_scores = {}
         
-        # Use training history to determine weights
         for label, score in proto_preds:
-            # Check training history instead of current storage
-            trained_examples = self.training_history.get(label, 0)
-            if trained_examples < 10:
-                # For newer classes (fewer training examples), trust neural predictions more
-                weight = 0.3  # Lower prototype weight for new classes
-            else:
-                weight = 0.7  # Higher prototype weight for established classes
-            combined_scores[label] = score * weight
-        
+            combined_scores[label] = score * self._blend_weights(label)[0]
+
         for label, score in head_preds:
-            # Use training history for neural weights too
-            trained_examples = self.training_history.get(label, 0)
-            if trained_examples < 10:
-                weight = 0.7  # Higher neural weight for new classes
-            else:
-                weight = 0.3  # Lower neural weight for established classes
-            combined_scores[label] = combined_scores.get(label, 0) + score * weight
+            combined_scores[label] = (
+                combined_scores.get(label, 0) + score * self._blend_weights(label)[1]
+            )
         
         # Normalize scores
         predictions = sorted(
@@ -764,6 +754,15 @@ class AdaptiveClassifier(ModelHubMixin):
         # Load configuration
         with open(model_path / "config.json", "r", encoding="utf-8") as f:
             config_dict = json.load(f)
+
+        # Classifiers saved before 0.2.0 were embedded with CLS pooling, and
+        # their stored config has no 'pooling' key. Reloading them under the new
+        # 'auto' default would re-embed every prototype differently and silently
+        # change their predictions, so they keep the pooling they were built
+        # with. Normalised here, before either construction path, so both agree.
+        saved_config = config_dict.get('config')
+        if isinstance(saved_config, dict) and 'pooling' not in saved_config:
+            config_dict['config'] = {**saved_config, 'pooling': 'cls'}
 
         # Load examples
         with open(model_path / "examples.json", "r", encoding="utf-8") as f:
@@ -1246,6 +1245,68 @@ This model:
             hidden_dims=hidden_dims
         ).to(self.device)
 
+    def _blend_weights(self, label: str) -> Tuple[float, float]:
+        """Prototype and neural weights for one label.
+
+        A class the model has barely seen has an unreliable prototype, so the
+        neural head carries more of the decision until the class is
+        established. Both regimes are configurable; before 0.2.0 these were
+        hardcoded and `prototype_weight` did nothing.
+        """
+        trained = self.training_history.get(label, 0)
+        if trained < getattr(self.config, 'new_class_example_threshold', 10):
+            return (getattr(self.config, 'new_class_prototype_weight', 0.3),
+                    getattr(self.config, 'new_class_neural_weight', 0.7))
+        return (self.config.prototype_weight, self.config.neural_weight)
+
+    def _resolve_pooling(self) -> str:
+        """Decide how to pool token embeddings into one vector per text.
+
+        With 'auto', the model's own sentence-transformers pooling config is
+        used when it publishes one, so a model is embedded the way it was
+        trained. Anything else falls back to mean pooling, which is a safe
+        default for encoders that never trained a sentence-level CLS token.
+        """
+        requested = getattr(self.config, 'pooling', 'auto')
+        if requested in ('mean', 'cls'):
+            return requested
+        # Read through getattr: the _from_pretrained paths build the object
+        # without going through __init__, so instance attributes set there are
+        # not guaranteed to exist here.
+        cached = getattr(self, '_resolved_pooling', None)
+        if cached is not None:
+            return cached
+
+        resolved = 'mean'
+        model_name = getattr(self, '_model_name', None) or getattr(
+            getattr(self, 'model', None), 'name_or_path', None
+        )
+        try:
+            from huggingface_hub import hf_hub_download
+
+            if not model_name:
+                raise ValueError('model name unavailable')
+            path = hf_hub_download(model_name, '1_Pooling/config.json')
+            with open(path, 'r', encoding='utf-8') as handle:
+                pooling_config = json.load(handle)
+            if pooling_config.get('pooling_mode_cls_token'):
+                resolved = 'cls'
+            elif pooling_config.get('pooling_mode_mean_tokens'):
+                resolved = 'mean'
+            logger.info(f"Using '{resolved}' pooling from the model's own config")
+        except Exception:
+            logger.info("No sentence-transformers pooling config found; using mean pooling")
+
+        self._resolved_pooling = resolved
+        return resolved
+
+    def _pool(self, hidden_states: torch.Tensor, attention_mask: Optional[torch.Tensor]) -> torch.Tensor:
+        """Reduce (batch, tokens, dim) to (batch, dim)."""
+        if self._resolve_pooling() == 'cls' or attention_mask is None:
+            return hidden_states[:, 0, :]
+        mask = attention_mask.unsqueeze(-1).to(hidden_states.dtype)
+        return (hidden_states * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
+
     def _get_embeddings(self, texts: List[str]) -> List[torch.Tensor]:
         """Get embeddings for input texts."""
         # Temporarily set model to eval mode (only for PyTorch models)
@@ -1269,7 +1330,9 @@ This model:
                 inputs = inputs.to(self.device)
 
             outputs = self.model(**inputs)
-            embeddings = outputs.last_hidden_state[:, 0, :]
+            embeddings = self._pool(
+                outputs.last_hidden_state, inputs.get('attention_mask')
+            )
 
             # Normalize embeddings
             embeddings = F.normalize(embeddings, p=2, dim=1)
@@ -1355,17 +1418,16 @@ This model:
                 else:
                     head_preds = []
                 
-                # Combine predictions
+                # Combine predictions with the configured weights. This path
+                # used to hardcode 0.7/0.3, so `predict` and `predict_batch`
+                # could disagree once a caller changed the config.
                 combined_scores = {}
-                proto_weight = 0.7  # More weight to prototypes
-                head_weight = 0.3   # Less weight to neural network
-                
                 for label, score in proto_preds:
-                    combined_scores[label] = score * proto_weight
-                    
+                    combined_scores[label] = score * self._blend_weights(label)[0]
+
                 for label, score in head_preds:
                     combined_scores[label] = (
-                        combined_scores.get(label, 0) + score * head_weight
+                        combined_scores.get(label, 0) + score * self._blend_weights(label)[1]
                     )
                 
                 # Sort and normalize predictions
