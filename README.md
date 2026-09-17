@@ -5,7 +5,7 @@
   <p><strong>🚀 Dynamic text classification with continuous learning, strategic defense, and zero-downtime adaptation</strong></p>
   
   [![PyPI - Version](https://img.shields.io/pypi/v/adaptive-classifier)](https://pypi.org/project/adaptive-classifier/)
-  [![PyPI - Downloads](https://img.shields.io/pypi/dm/adaptive-classifier)](https://pypi.org/project/adaptive-classifier/)
+  [![PyPI Downloads](https://static.pepy.tech/personalized-badge/adaptive-classifier?period=monthly&units=INTERNATIONAL_SYSTEM&left_color=GREY&right_color=GREEN&left_text=downloads/month)](https://pepy.tech/projects/adaptive-classifier)
   [![GitHub Stars](https://img.shields.io/github/stars/codelion/adaptive-classifier)](https://github.com/codelion/adaptive-classifier/stargazers)
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
   [![GitHub Discussions](https://img.shields.io/github/discussions/codelion/adaptive-classifier)](https://github.com/codelion/adaptive-classifier/discussions)
