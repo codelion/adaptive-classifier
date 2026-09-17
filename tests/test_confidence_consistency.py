@@ -37,13 +37,23 @@ def test_confidence_consistency_after_save_load():
         predictions_after = loaded_classifier.predict(test_text)
         conf_after = {label: score for label, score in predictions_after}
         
-        # Check that confidence scores are similar (within 1% tolerance)
+        # Check that confidence scores are similar (within 1% tolerance).
+        # This is the property the test exists for: saving and loading must not
+        # change what the classifier says.
         assert abs(conf_before["foo"] - conf_after["foo"]) < 0.01, \
             f"Confidence dropped from {conf_before['foo']:.4f} to {conf_after['foo']:.4f}"
-        
-        # Verify reasonable confidence is maintained (accounting for prototype normalization)
-        assert conf_after["foo"] > 0.70, \
-            f"Confidence too low after load: {conf_after['foo']:.4f}"
+
+        # The right label, well clear of chance. An absolute threshold was used
+        # here before, but the reachable confidence depends on the pooling and on
+        # the prototype/neural weights, so it was really asserting one particular
+        # configuration rather than anything about save/load. The two training
+        # texts differ by a single token, which mean pooling averages away, so
+        # the prototypes are nearly identical and most of the signal is the
+        # neural head's.
+        assert max(conf_after, key=conf_after.get) == "foo", \
+            f"Wrong label after load: {conf_after}"
+        assert conf_after["foo"] > 0.55, \
+            f"Confidence at chance after load: {conf_after['foo']:.4f}"
 
 
 def test_continuous_learning_with_save_load():

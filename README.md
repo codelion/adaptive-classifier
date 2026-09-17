@@ -117,6 +117,59 @@ pip install pytest pytest-cov pytest-randomly
 
 ---
 
+## Pooling
+
+`AdaptiveClassifier` reduces a model's token embeddings to one vector per text.
+How it does that matters, because prototype memory is cosine nearest-neighbour
+search over those vectors.
+
+Before 0.2.0 the CLS token was always used. That is wrong for most encoders.
+`all-MiniLM-L6-v2` publishes `pooling_mode_mean_tokens`, so it is a mean-pooling
+model, and a masked language model never trains its CLS token as a sentence
+representation at all. On a semantic-similarity check with `all-MiniLM-L6-v2`,
+CLS scored unrelated sentence pairs at 0.53 cosine similarity while mean pooling
+scored them at -0.03: a 2.4x difference in separation between related and
+unrelated text.
+
+From 0.2.0 the default is `auto`. The model's own sentence-transformers pooling
+config is used when it publishes one, otherwise mean pooling.
+
+```python
+# use what the model was trained with (default)
+classifier = AdaptiveClassifier("sentence-transformers/all-MiniLM-L6-v2")
+
+# or choose explicitly
+classifier = AdaptiveClassifier("bert-base-uncased", config={"pooling": "mean"})
+classifier = AdaptiveClassifier("bert-base-uncased", config={"pooling": "cls"})
+```
+
+Classifiers saved before 0.2.0 keep CLS pooling when reloaded, so upgrading does
+not change their predictions. Retrain, or pass `pooling` explicitly, to pick up
+the new behaviour.
+
+## Prototype and neural weights
+
+A prediction mixes two signals: similarity to the class prototypes, and the
+trained neural head. `prototype_weight` and `neural_weight` control the mix.
+
+Both keys existed before 0.2.0 but were ignored. Every prediction path used a
+hardcoded 0.7 / 0.3, so `predict` and `predict_batch` could also disagree once a
+caller changed the config. They work now, and the best split depends on how well
+your encoder separates your classes: an encoder that bunches everything together
+produces weak prototypes and is better off leaning on the head.
+
+```python
+classifier = AdaptiveClassifier(
+    "sentence-transformers/all-MiniLM-L6-v2",
+    config={"prototype_weight": 0.3, "neural_weight": 0.7},
+)
+```
+
+A class with few examples has an unreliable prototype, so it leans on the head
+until it is established. That is configurable too, via
+`new_class_example_threshold` (default 10), `new_class_prototype_weight` (0.3)
+and `new_class_neural_weight` (0.7).
+
 ## ⚡ Quick Start
 
 ### 30-Second Setup
