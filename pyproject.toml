@@ -52,7 +52,7 @@ serve = [
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
 ]
-# Few-shot benchmark against SetFit: scripts/benchmark_fewshot.py (see docs/benchmark.md).
+# Benchmark harness: scripts/benchmark_fewshot.py (see docs/benchmark.md).
 benchmark = [
     "setfit>=1.1.0",
     "datasets>=2.14.0",

@@ -174,5 +174,5 @@ cython_debug/
 demo_classifier/
 scripts/benchmark_results/
 
-# SetFit training checkpoints
+# Training checkpoints written by the benchmark harness
 checkpoints/
