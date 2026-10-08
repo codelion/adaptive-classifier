@@ -43,6 +43,13 @@ test = [
     "pytest-randomly>=3.12.0",
     "psutil",
     "hypothesis>=6.80.0",
+    "fastapi>=0.100.0",
+    "httpx>=0.24.0",
+]
+# HTTP server: python -m adaptive_classifier.serving ./model
+serve = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
 ]
 # Only needed to run the scripts/ benchmarks and data generators.
 scripts = [

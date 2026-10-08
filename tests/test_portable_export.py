@@ -218,3 +218,43 @@ def test_portable_reference_matches_predict_for_every_scoring_branch(base_model,
         assert actual.keys() == expected.keys()
         for label in expected:
             assert float(actual[label]) == pytest.approx(expected[label], abs=1e-4)
+
+
+# --- a saved directory carries its own tokenizer ----------------------------------------------
+
+@pytest.mark.skipif(not _onnx_available(), reason="optimum[onnxruntime] not installed")
+def test_onnx_load_uses_the_saved_tokenizer_not_the_base_model_repo(base_model, tmp_path):
+    """The stored model name pointed at a Hub repo; loading used to fetch the tokenizer from it,
+    so a saved classifier could not start without network access to that repo."""
+    clf = _trained(base_model, pooling="mean")
+    clf.save(str(tmp_path), include_onnx=True, quantize_onnx=False)
+    config_path = tmp_path / "config.json"
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    data["model_name"] = "nobody/this-repo-does-not-exist"
+    config_path.write_text(json.dumps(data), encoding="utf-8")
+
+    loaded = AdaptiveClassifier.load(str(tmp_path), use_onnx=True, prefer_quantized=False, device="cpu")
+    assert loaded.use_onnx
+    assert loaded.tokenizer.name_or_path == str(tmp_path)
+    for query in QUERIES:
+        a, b = dict(clf.predict(query, k=3)), dict(loaded.predict(query, k=3))
+        assert all(a[l] == pytest.approx(b[l], abs=1e-4) for l in a)
+
+
+def test_loading_without_saved_tokenizer_files_still_works(base_model, tmp_path):
+    """Directories saved before 0.3.0 have no tokenizer files and fall back to the model name."""
+    clf = _trained(base_model, pooling="mean")
+    clf.save(str(tmp_path), include_onnx=False)
+    for name in ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.txt"):
+        (tmp_path / name).unlink(missing_ok=True)
+    loaded = AdaptiveClassifier.load(str(tmp_path), use_onnx=False, device="cpu")
+    assert loaded.predict(QUERIES[0])
+
+
+def test_pytorch_load_also_uses_the_saved_tokenizer(base_model, tmp_path):
+    clf = _trained(base_model, pooling="mean")
+    clf.save(str(tmp_path), include_onnx=False)
+    loaded = AdaptiveClassifier.load(str(tmp_path), use_onnx=False, device="cpu")
+    assert loaded.tokenizer.name_or_path == str(tmp_path)
+    for query in QUERIES:
+        assert [l for l, _ in loaded.predict(query)] == [l for l, _ in clf.predict(query)]

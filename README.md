@@ -372,6 +372,16 @@ report["drifted"], report["ood_rate"], report["p_value"]
 
 `margin` (the default) finds texts on a decision boundary; `ood` finds texts unlike any known class. Uncertainty sampling is not guaranteed to beat labeling at random: when classes overlap so much that the confusion is irreducible noise, labeling the confusing texts teaches the model little (it did not in a synthetic test with heavily overlapping classes). It earns its keep when ambiguity comes from missing data, and `ood` is the reliable way to find classes you have not defined yet.
 
+### Serving
+
+```bash
+pip install "adaptive-classifier[serve]"
+python -m adaptive_classifier.serving ./my_classifier --port 8000
+curl -s localhost:8000/predict -H 'content-type: application/json' -d '{"text": "where is my refund?"}'
+```
+
+Predictions, batches, conformal sets and out-of-distribution checks over HTTP, plus optional API-key-protected endpoints for adding examples and classes while it runs. One classifier is safe to share between threads, and `await classifier.apredict(...)` keeps an event loop responsive. See [docs/serving.md](docs/serving.md) and `docker/Dockerfile`.
+
 ### Fixing Mistakes and Knowing When to Abstain
 
 ```python

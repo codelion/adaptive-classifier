@@ -15,6 +15,10 @@
 - `suggest_labels(texts, n, strategy, diverse)`: active learning. Ranks unlabeled texts by how much a label would help (`margin`, `entropy`, `least_confidence`, or `ood` to discover unseen classes), optionally spreading the picks so near-duplicates are not all chosen.
 - `drift_report(texts)`: tests whether a window of incoming texts has moved away from the known classes (share of out-of-distribution texts against an expected rate, one-sided binomial test).
 
+- **Serving.** `python -m adaptive_classifier.serving ./model` runs a FastAPI server (`/predict`, `/predict_batch`, `/predict_set`, `/ood`, and optional authenticated `/examples`, `/forget`, `/remove_examples`); `create_app(classifier)` returns the app for embedding. Install with `pip install "adaptive-classifier[serve]"`. See `docs/serving.md`. `docker/Dockerfile` is provided but has not been built in the environment it was written in.
+- Async methods `apredict`, `apredict_batch` and `aadd_examples` that run in a worker thread.
+- A saved directory is self-contained for loading: the tokenizer saved next to the model is used instead of fetching the base model's repository, so an ONNX-saved classifier starts without Hub access.
+
 ### Changed (default behaviour: predictions change)
 - **The neural head is now actually trained.** It used to get about ten optimiser steps and stop at the first loss plateau, so it could not learn even a 2-D XOR from 120 examples. It now trains for at least `head_steps` (default 300) steps with a cosine-decayed `head_learning_rate` (default 0.003). Small memories take roughly 1-2 s per `add_examples` call; lower `head_steps` if you add examples very frequently.
 - **Prototype scores are sharper.** They are now `softmax(-distance² / prototype_temperature)` (default 0.25) instead of `softmax(exp(-distance))`, which barely separated the nearest class from the rest (about 0.45 vs 0.21), so a confident head could always outvote it. `prototype_temperature=None` restores the old scoring.
@@ -25,6 +29,7 @@
 - `clear_memory(labels=[...])` now removes those classes completely (it used to leave them in the label map and neural head, so they could still be predicted).
 
 ### Fixed
+- **Thread safety.** Predicting while another thread added or forgot classes crashed with errors such as "selected index k out of range", and concurrent `add_examples` calls corrupted each other. Every public operation now holds a per-instance lock, so one classifier can be shared between threads. Throughput scales with processes, not threads.
 - `predict_batch(k=...)` scored only `k` classes before blending, so with more than `k` classes its scores differed from `predict` for the same text. It now scores every class and trims to `k`.
 - Accuracy on small training sets (see above): the default configuration got only 75-92% of its own training data right on perfectly separable data with fewer than 10 examples per class.
 - Integer (or other non-string) labels corrupted a classifier on save/reload, duplicating classes. `add_examples` now rejects non-string labels with a clear error; convert with `str(label)`.

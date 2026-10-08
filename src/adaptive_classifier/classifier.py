@@ -5,9 +5,12 @@ import numpy as np
 from transformers import AutoModel, AutoTokenizer
 from typing import List, Dict, Optional, Tuple, Any, Set, Union
 import logging
+import asyncio
 import copy
+import functools
 import math
 import numbers
+import threading
 from pathlib import Path
 from safetensors.torch import save_file, load_file
 import json
@@ -27,12 +30,52 @@ from .strategic import (
 
 logger = logging.getLogger(__name__)
 
+_LOCK_CREATION = threading.Lock()
+
+# Files that make a directory loadable by AutoTokenizer.
+_TOKENIZER_FILES = (
+    "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
+    "vocab.txt", "vocab.json", "merges.txt", "added_tokens.json",
+    "spiece.model", "sentencepiece.bpe.model",
+)
+
+
+def _has_local_tokenizer(directory: Path) -> bool:
+    return (directory / "tokenizer.json").exists() or (directory / "tokenizer_config.json").exists()
+
+
+def _synchronized(method):
+    """Run a method while holding the instance lock.
+
+    Predictions read several structures (label maps, prototypes, the neural
+    head) that `add_examples`, `forget` and friends rewrite together; a reader
+    that sees them half-updated fails with errors like "selected index k out of
+    range". One reentrant lock per classifier makes every public operation
+    atomic, so a classifier can be shared between threads (for example behind a
+    web server). Throughput scales with processes, not threads.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class AdaptiveClassifier(ModelHubMixin):
     """A flexible classifier that can adapt to new classes and examples."""
 
     # Set by `calibrate`. A class-level default keeps instances built without
     # __init__ (the loaders do that) working.
     calibration: Optional[Dict[str, Any]] = None
+
+    @property
+    def _lock(self) -> "threading.RLock":
+        # Created lazily because the loaders build instances without __init__.
+        lock = self.__dict__.get('_instance_lock')
+        if lock is None:
+            with _LOCK_CREATION:
+                lock = self.__dict__.setdefault('_instance_lock', threading.RLock())
+        return lock
 
     def __init__(
         self,
@@ -161,6 +204,7 @@ class AdaptiveClassifier(ModelHubMixin):
         if not isinstance(k, numbers.Integral) or isinstance(k, bool) or k < 0:
             raise ValueError(f"k must be a non-negative integer; got {k!r}")
 
+    @_synchronized
     def add_examples(self, texts: List[str], labels: List[str]):
         """Add new examples with special handling for new classes."""
         if not texts or not labels:
@@ -426,6 +470,7 @@ class AdaptiveClassifier(ModelHubMixin):
             
             logger.debug("Performed strategic training step")
     
+    @_synchronized
     def predict(
         self,
         text: str,
@@ -472,6 +517,7 @@ class AdaptiveClassifier(ModelHubMixin):
             return []
         return predictions
 
+    @_synchronized
     def ood_score(self, text: str) -> float:
         """How far `text` sits outside the known classes.
 
@@ -488,6 +534,7 @@ class AdaptiveClassifier(ModelHubMixin):
         score, _ = self.memory.ood_score(embedding)
         return score
 
+    @_synchronized
     def is_ood(self, text: str, threshold: Optional[float] = None) -> bool:
         """True when `text` scores above the out-of-distribution threshold.
 
@@ -497,6 +544,20 @@ class AdaptiveClassifier(ModelHubMixin):
         """
         limit = self.config.ood_threshold if threshold is None else threshold
         return self.ood_score(text) > limit
+
+    # --- async API ---------------------------------------------------------------------
+
+    async def apredict(self, text: str, k: int = 5, **kwargs) -> List[Tuple[str, float]]:
+        """`predict` without blocking the event loop (runs in a worker thread)."""
+        return await asyncio.to_thread(self.predict, text, k, **kwargs)
+
+    async def apredict_batch(self, texts: List[str], k: int = 5, **kwargs) -> List[List[Tuple[str, float]]]:
+        """`predict_batch` without blocking the event loop."""
+        return await asyncio.to_thread(self.predict_batch, texts, k, **kwargs)
+
+    async def aadd_examples(self, texts: List[str], labels: List[str]):
+        """`add_examples` without blocking the event loop."""
+        return await asyncio.to_thread(self.add_examples, texts, labels)
 
     # --- calibration ---------------------------------------------------------------
 
@@ -534,6 +595,7 @@ class AdaptiveClassifier(ModelHubMixin):
             raise ValueError(f"Unknown labels: {unknown}")
         return np.array([self.label_to_id[label] for label in labels])
 
+    @_synchronized
     def calibrate(self, texts: List[str], labels: List[str]) -> Dict[str, float]:
         """Fit confidence calibration on labelled examples the model was *not* trained on.
 
@@ -577,6 +639,7 @@ class AdaptiveClassifier(ModelHubMixin):
             'accuracy': before['accuracy'],
         }
 
+    @_synchronized
     def calibration_report(self, texts: List[str], labels: List[str],
                            calibrated: bool = True, bins: int = 10) -> Dict[str, float]:
         """Accuracy, mean confidence, expected calibration error (ECE) and NLL on labelled data.
@@ -590,6 +653,7 @@ class AdaptiveClassifier(ModelHubMixin):
             probs = calibration_math.apply_temperature(probs, self.calibration['temperature'])
         return calibration_math.summarise(probs, targets, bins)
 
+    @_synchronized
     def predict_set(self, text: str, alpha: float = 0.1) -> List[Tuple[str, float]]:
         """Labels that contain the true one with probability at least `1 - alpha`.
 
@@ -616,6 +680,7 @@ class AdaptiveClassifier(ModelHubMixin):
 
     _SUGGEST_STRATEGIES = ("margin", "entropy", "least_confidence", "ood")
 
+    @_synchronized
     def suggest_labels(
         self,
         texts: List[str],
@@ -698,6 +763,7 @@ class AdaptiveClassifier(ModelHubMixin):
             embeddings = self._get_embeddings(texts)
         return [self.memory.ood_score(embedding)[0] for embedding in embeddings]
 
+    @_synchronized
     def drift_report(
         self,
         texts: List[str],
@@ -743,6 +809,7 @@ class AdaptiveClassifier(ModelHubMixin):
             'drifted': p_value < alpha,
         }
 
+    @_synchronized
     def forget(self, labels: Union[str, List[str]]):
         """Remove one or more classes entirely.
 
@@ -760,6 +827,7 @@ class AdaptiveClassifier(ModelHubMixin):
             raise ValueError(f"Unknown labels: {unknown}")
         self._drop_classes(set(labels))
 
+    @_synchronized
     def remove_examples(
         self,
         texts: List[str],
@@ -939,6 +1007,7 @@ class AdaptiveClassifier(ModelHubMixin):
         
         return blended_predictions[:k]
     
+    @_synchronized
     def _save_pretrained(
         self,
         save_directory: Union[str, Path],
@@ -1162,6 +1231,24 @@ class AdaptiveClassifier(ModelHubMixin):
                     local_files_only=local_files_only,
                 )
 
+                # Tokenizer files (written by save() since 0.3.0), so loading does not
+                # depend on the base model's repository. Older repos do not have them.
+                for tokenizer_file in _TOKENIZER_FILES:
+                    try:
+                        hf_hub_download(
+                            repo_id=model_id,
+                            filename=tokenizer_file,
+                            revision=revision,
+                            cache_dir=cache_dir,
+                            force_download=force_download,
+                            proxies=proxies,
+                            resume_download=resume_download,
+                            token=token,
+                            local_files_only=local_files_only,
+                        )
+                    except Exception:
+                        pass
+
                 # Try to download ONNX files if they exist
                 try:
                     # Download quantized ONNX model (primary)
@@ -1281,7 +1368,8 @@ class AdaptiveClassifier(ModelHubMixin):
                 file_name=onnx_file,
                 trust_remote_code=trust_remote_code
             )
-            classifier.tokenizer = AutoTokenizer.from_pretrained(config_dict['model_name'], trust_remote_code=trust_remote_code)
+            tokenizer_source = str(model_path) if _has_local_tokenizer(model_path) else config_dict['model_name']
+            classifier.tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=trust_remote_code)
 
             # Initialize memory and other components
             classifier.embedding_dim = classifier.model.config.hidden_size
@@ -1320,6 +1408,12 @@ class AdaptiveClassifier(ModelHubMixin):
                 use_onnx=final_use_onnx if isinstance(final_use_onnx, bool) else False,
                 trust_remote_code=trust_remote_code
             )
+
+        # A tokenizer saved with the classifier wins over the one the constructor fetched,
+        # so what runs matches what was saved (and needs no network for the tokenizer).
+        if _has_local_tokenizer(model_path):
+            classifier.tokenizer = AutoTokenizer.from_pretrained(
+                str(model_path), trust_remote_code=trust_remote_code)
 
         # Restore label mappings
         classifier.label_to_id = config_dict['label_to_id']
@@ -1486,6 +1580,7 @@ This model:
             
         return "\n".join(lines)
 
+    @_synchronized
     def export_onnx(
         self,
         save_directory: Union[str, Path],
@@ -1685,6 +1780,7 @@ This model:
             self.adaptive_head = self.adaptive_head.to(device)
         return self
     
+    @_synchronized
     def get_memory_stats(self) -> Dict[str, Any]:
         """Get memory statistics.
         
@@ -1814,6 +1910,7 @@ This model:
         # Return embeddings as list
         return [emb.cpu() for emb in embeddings]
 
+    @_synchronized
     def get_example_statistics(self) -> Dict[str, Any]:
         """Get statistics about stored examples and model state."""
         stats = {
@@ -1838,6 +1935,7 @@ This model:
         
         return stats
 
+    @_synchronized
     def predict_batch(
         self,
         texts: List[str],
@@ -1920,6 +2018,7 @@ This model:
         
         return all_predictions
 
+    @_synchronized
     def clear_memory(self, labels: Optional[List[str]] = None):
         """Clear memory for specified labels or all if none specified.
 
@@ -1934,6 +2033,7 @@ This model:
         if known:
             self.forget(known)
 
+    @_synchronized
     def merge_classifiers(self, other: 'AdaptiveClassifier') -> 'AdaptiveClassifier':
         """Merge another classifier into this one."""
         # Verify compatibility
@@ -2143,6 +2243,7 @@ This model:
         
         logger.debug("Completed strategic training step")
     
+    @_synchronized
     def predict_strategic(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
         """Predict assuming the input might be strategically modified.
         
@@ -2190,6 +2291,7 @@ This model:
             logger.warning(f"Strategic prediction failed: {e}. Falling back to regular prediction.")
             return self._predict_regular(text, k)
     
+    @_synchronized
     def predict_robust(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
         """Predict assuming input has already been strategically modified.
         
