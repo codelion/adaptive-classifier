@@ -356,6 +356,22 @@ classifier.calibration_report(test_texts, test_labels)   # check it on separate 
 
 One easy input gives a one-label set; an ambiguous one gives several. Calibration is saved with the model and discarded if you add or forget a class; re-run it after substantial new data.
 
+### Active Learning and Drift
+
+```python
+# Which of these 5,000 unlabeled texts should a person label next?
+for index, score in classifier.suggest_labels(unlabeled, n=20, strategy="margin", diverse=True):
+    print(unlabeled[index])
+
+classifier.suggest_labels(unlabeled, n=20, strategy="ood")   # hunt for classes you have not defined yet
+
+# Has this week's traffic moved away from what the model knows?
+report = classifier.drift_report(recent_texts)
+report["drifted"], report["ood_rate"], report["p_value"]
+```
+
+`margin` (the default) finds texts on a decision boundary; `ood` finds texts unlike any known class. Uncertainty sampling is not guaranteed to beat labeling at random: when classes overlap so much that the confusion is irreducible noise, labeling the confusing texts teaches the model little (it did not in a synthetic test with heavily overlapping classes). It earns its keep when ambiguity comes from missing data, and `ood` is the reliable way to find classes you have not defined yet.
+
 ### Fixing Mistakes and Knowing When to Abstain
 
 ```python

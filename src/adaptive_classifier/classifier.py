@@ -612,6 +612,137 @@ class AdaptiveClassifier(ModelHubMixin):
         chosen = [(label, p) for label, p in full if 1.0 - p <= threshold]
         return chosen or full[:1]
 
+    # --- active learning and drift -----------------------------------------------------
+
+    _SUGGEST_STRATEGIES = ("margin", "entropy", "least_confidence", "ood")
+
+    def suggest_labels(
+        self,
+        texts: List[str],
+        n: int = 10,
+        strategy: str = "margin",
+        diverse: bool = False,
+    ) -> List[Tuple[int, float]]:
+        """Pick the unlabeled texts that would teach the model the most if labelled.
+
+        Strategies (higher score = more worth labelling):
+
+        * ``"margin"``: how close the top two classes are (``1 - (p1 - p2)``).
+          A good default: it finds texts sitting on a decision boundary.
+        * ``"entropy"``: uncertainty spread over all classes, scaled to 0-1.
+        * ``"least_confidence"``: ``1 - p1``.
+        * ``"ood"``: how far the text is from every known class (see
+          `ood_score`). Use it to discover classes the model has never seen.
+
+        With ``diverse=True`` the picks are spread out: after each choice,
+        texts similar to it are discounted, so you do not label ten near
+        duplicates of the same confusing case.
+
+        Probabilities are calibrated if `calibrate` was run.
+
+        Returns:
+            Up to `n` ``(index into texts, score)`` pairs, best first.
+        """
+        if not texts:
+            raise ValueError("Empty input list")
+        if strategy not in self._SUGGEST_STRATEGIES:
+            raise ValueError(f"strategy must be one of {self._SUGGEST_STRATEGIES}; got {strategy!r}")
+        if not isinstance(n, numbers.Integral) or isinstance(n, bool) or n < 1:
+            raise ValueError(f"n must be a positive integer; got {n!r}")
+        if not self.label_to_id:
+            raise ValueError("suggest_labels needs a trained classifier")
+        if any(not isinstance(t, str) or not t for t in texts):
+            raise ValueError("texts must all be non-empty strings")
+
+        scores = self._informativeness(texts, strategy)
+        count = min(int(n), len(texts))
+
+        if not diverse:
+            order = sorted(range(len(texts)), key=lambda i: scores[i], reverse=True)
+            return [(i, float(scores[i])) for i in order[:count]]
+
+        embeddings = torch.stack(self._get_embeddings(texts))
+        chosen: List[int] = []
+        discount = np.ones(len(texts))
+        for _ in range(count):
+            adjusted = np.where(np.isin(np.arange(len(texts)), chosen), -np.inf, scores * discount)
+            best = int(np.argmax(adjusted))
+            chosen.append(best)
+            # Texts similar to the one just chosen are worth less from now on.
+            similarity = (embeddings @ embeddings[best]).clamp(min=0).numpy()
+            discount = np.minimum(discount, 1.0 - similarity)
+        return [(i, float(scores[i])) for i in chosen]
+
+    def _informativeness(self, texts: List[str], strategy: str) -> np.ndarray:
+        if strategy == "ood":
+            return np.array(self._ood_scores(texts))
+        classes = len(self.id_to_label)
+        batches = self.predict_batch(texts, k=classes)
+        scores = np.zeros(len(texts))
+        for row, preds in enumerate(batches):
+            probs = np.array(sorted((p for _, p in preds), reverse=True))
+            if probs.size == 0:
+                continue
+            if strategy == "least_confidence":
+                scores[row] = 1.0 - probs[0]
+            elif strategy == "margin":
+                scores[row] = 1.0 - (probs[0] - (probs[1] if probs.size > 1 else 0.0))
+            else:                                                    # entropy
+                nonzero = probs[probs > 0]
+                entropy = float(-(nonzero * np.log(nonzero)).sum())
+                scores[row] = entropy / math.log(classes) if classes > 1 else 0.0
+        return scores
+
+    def _ood_scores(self, texts: List[str]) -> List[float]:
+        with torch.no_grad():
+            embeddings = self._get_embeddings(texts)
+        return [self.memory.ood_score(embedding)[0] for embedding in embeddings]
+
+    def drift_report(
+        self,
+        texts: List[str],
+        expected_ood_rate: float = 0.05,
+        alpha: float = 0.01,
+        threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Has incoming data moved away from what the classifier knows?
+
+        Scores each text with `ood_score` and tests whether the share of
+        out-of-distribution texts is larger than `expected_ood_rate` (what you
+        see on healthy traffic; 5% by default) with a one-sided binomial test.
+        Run it on a recent window of production inputs. A single window of a
+        few dozen texts cannot detect small shifts, and repeated checks need a
+        stricter `alpha`.
+
+        Returns:
+            ``n``, ``ood_rate``, ``mean_ood_score``, ``p_value`` and
+            ``drifted`` (True when ``p_value < alpha``).
+        """
+        if not texts:
+            raise ValueError("Empty input list")
+        if not self.label_to_id:
+            raise ValueError("drift_report needs a trained classifier")
+        if not 0.0 <= expected_ood_rate < 1.0:
+            raise ValueError(f"expected_ood_rate must be in [0, 1); got {expected_ood_rate}")
+        if not 0.0 < alpha < 1.0:
+            raise ValueError(f"alpha must be between 0 and 1; got {alpha}")
+        if any(not isinstance(t, str) or not t for t in texts):
+            raise ValueError("texts must all be non-empty strings")
+
+        from scipy.stats import binomtest
+
+        limit = self.config.ood_threshold if threshold is None else threshold
+        scores = np.array(self._ood_scores(texts))
+        flagged = int((scores > limit).sum())
+        p_value = float(binomtest(flagged, len(texts), expected_ood_rate, alternative="greater").pvalue)
+        return {
+            'n': len(texts),
+            'ood_rate': flagged / len(texts),
+            'mean_ood_score': float(scores.mean()),
+            'p_value': p_value,
+            'drifted': p_value < alpha,
+        }
+
     def forget(self, labels: Union[str, List[str]]):
         """Remove one or more classes entirely.
 

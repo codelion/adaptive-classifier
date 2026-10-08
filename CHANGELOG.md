@@ -12,6 +12,9 @@
 - `calibrate(texts, labels)` fits one temperature on held-out labelled data so confidences match how often the model is right, and `calibration_report(...)` measures accuracy, expected calibration error and NLL. `predict`, `predict_batch` and `abstain_below` then use calibrated probabilities. Calibration is saved with the model and discarded when the set of classes changes.
 - `predict_set(text, alpha=0.1)`: split-conformal prediction sets that contain the true label with probability at least `1 - alpha`.
 
+- `suggest_labels(texts, n, strategy, diverse)`: active learning. Ranks unlabeled texts by how much a label would help (`margin`, `entropy`, `least_confidence`, or `ood` to discover unseen classes), optionally spreading the picks so near-duplicates are not all chosen.
+- `drift_report(texts)`: tests whether a window of incoming texts has moved away from the known classes (share of out-of-distribution texts against an expected rate, one-sided binomial test).
+
 ### Changed (default behaviour: predictions change)
 - **The neural head is now actually trained.** It used to get about ten optimiser steps and stop at the first loss plateau, so it could not learn even a 2-D XOR from 120 examples. It now trains for at least `head_steps` (default 300) steps with a cosine-decayed `head_learning_rate` (default 0.003). Small memories take roughly 1-2 s per `add_examples` call; lower `head_steps` if you add examples very frequently.
 - **Prototype scores are sharper.** They are now `softmax(-distance² / prototype_temperature)` (default 0.25) instead of `softmax(exp(-distance))`, which barely separated the nearest class from the rest (about 0.45 vs 0.21), so a confident head could always outvote it. `prototype_temperature=None` restores the old scoring.

@@ -154,6 +154,22 @@ def predict_set(text: str, alpha: float = 0.1) -> List[Tuple[str, float]]
 
 Split-conformal prediction set: contains the true label with probability at least `1 - alpha` for inputs that look like the calibration data (an average guarantee, not per input). Never empty. Requires `calibrate` first.
 
+#### suggest_labels
+
+```python
+def suggest_labels(texts, n=10, strategy="margin", diverse=False) -> List[Tuple[int, float]]
+```
+
+Rank unlabeled texts by how useful a label would be. Strategies: `margin` (top two classes close together), `entropy`, `least_confidence`, and `ood` (far from every known class, for discovering new classes). With `diverse=True` texts similar to an earlier pick are discounted so the picks are spread out. Returns up to `n` `(index into texts, score)` pairs, best first; uses calibrated probabilities if `calibrate` was run.
+
+#### drift_report
+
+```python
+def drift_report(texts, expected_ood_rate=0.05, alpha=0.01, threshold=None) -> Dict[str, Any]
+```
+
+Tests whether the share of out-of-distribution texts in a window of incoming data is higher than `expected_ood_rate` (one-sided binomial test). Returns `n`, `ood_rate`, `mean_ood_score`, `p_value` and `drifted` (`p_value < alpha`). A window of a few dozen texts cannot detect small shifts; use a stricter `alpha` when checking repeatedly.
+
 #### forget
 
 ```python
