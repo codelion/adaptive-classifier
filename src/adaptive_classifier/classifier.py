@@ -6,6 +6,7 @@ from transformers import AutoModel, AutoTokenizer
 from typing import List, Dict, Optional, Tuple, Any, Set, Union
 import logging
 import copy
+import numbers
 from pathlib import Path
 from safetensors.torch import save_file, load_file
 import json
@@ -131,12 +132,36 @@ class AdaptiveClassifier(ModelHubMixin):
             logger.warning(f"Invalid use_onnx value: {use_onnx}. Using auto-detection.")
             return self.device == "cpu"
 
+    @staticmethod
+    def _validate_training_inputs(texts: List[str], labels: List[str]):
+        """Reject inputs that would corrupt the classifier or fail obscurely later."""
+        bad_text = next((t for t in texts if not isinstance(t, str)), None)
+        if bad_text is not None or any(t is None for t in texts):
+            raise ValueError(
+                f"texts must all be strings; got {type(bad_text).__name__}"
+            )
+        bad_label = next((l for l in labels if not isinstance(l, str)), None)
+        if bad_label is not None or any(l is None for l in labels):
+            # Saving writes labels into JSON keys and tensor names, which turns
+            # other types into strings: a saved integer-labelled classifier
+            # reloads with duplicated, inconsistent classes.
+            raise ValueError(
+                f"labels must be strings; got {type(bad_label).__name__}. "
+                "Convert with str(label)."
+            )
+
+    @staticmethod
+    def _validate_k(k: int):
+        if not isinstance(k, numbers.Integral) or isinstance(k, bool) or k < 0:
+            raise ValueError(f"k must be a non-negative integer; got {k!r}")
+
     def add_examples(self, texts: List[str], labels: List[str]):
         """Add new examples with special handling for new classes."""
         if not texts or not labels:
             raise ValueError("Empty input lists")
         if len(texts) != len(labels):
             raise ValueError("Mismatched text and label lists")
+        self._validate_training_inputs(texts, labels)
 
         # Check if classifier has any existing classes (before updating mappings)
         has_existing_classes = len(self.label_to_id) > 0
@@ -417,6 +442,7 @@ class AdaptiveClassifier(ModelHubMixin):
         """
         if not text:
             raise ValueError("Empty input text")
+        self._validate_k(k)
 
         if abstain_ood and self.is_ood(text):
             return []
@@ -823,6 +849,11 @@ class AdaptiveClassifier(ModelHubMixin):
        
         # Check if model_id is a local directory
         model_path = Path(model_id)
+        if model_path.is_dir() and not (model_path / "config.json").exists():
+            raise FileNotFoundError(
+                f"{model_id} is a directory but not a saved AdaptiveClassifier: "
+                "config.json is missing"
+            )
         try:
             if model_path.is_dir() and (model_path / "config.json").exists():
                 # Local directory with required files
@@ -1532,7 +1563,8 @@ This model:
         """Predict labels for a batch of texts with improved batching."""
         if not texts:
             raise ValueError("Empty input batch")
-        
+        self._validate_k(k)
+
         all_predictions = []
         
         # Process in batches

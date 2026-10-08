@@ -17,13 +17,43 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  models:
+    # Download the Hugging Face models once, with retries. The test jobs run
+    # offline from the cache, so a Hub rate limit (HTTP 429) or outage fails
+    # this one step instead of dozens of tests across the matrix.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Cache Hugging Face models
+      id: hf-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/huggingface
+        key: hf-models-${{ hashFiles('scripts/prefetch_test_models.py') }}
+
+    - name: Download models
+      if: steps.hf-cache.outputs.cache-hit != 'true'
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      run: |
+        pip install huggingface_hub
+        python scripts/prefetch_test_models.py
+
   unit-tests:
+    needs: models
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13']
+        # The two ends of the supported range (requires-python >=3.10).
+        python-version: ['3.10', '3.13']
 
     steps:
     - uses: actions/checkout@v4
@@ -34,25 +64,24 @@ jobs:
         python-version: ${{ matrix.python-version }}
         cache: pip
 
-    - name: Cache Hugging Face models
-      uses: actions/cache@v4
+    - name: Restore Hugging Face models
+      uses: actions/cache/restore@v4
       with:
         path: ~/.cache/huggingface
-        key: hf-${{ runner.os }}-${{ hashFiles('tests/**/*.py') }}
-        restore-keys: |
-          hf-${{ runner.os }}-
+        key: hf-models-${{ hashFiles('scripts/prefetch_test_models.py') }}
+        fail-on-cache-miss: true
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -e ".[test]"
 
-    # Everything except tests marked `integration`. This includes the tests that
-    # download small models from the Hub; they need network access, which GitHub
-    # runners have. Tests marked `integration` run in the job below.
+    # Everything except tests marked `integration`, run offline against the
+    # models prefetched above. Tests marked `integration` run in the job below.
     - name: Run tests
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        HF_HUB_OFFLINE: '1'
       run: |
         pytest tests/ -v --cov=adaptive_classifier --cov-report=xml --cov-report=term -m "not integration"
 
@@ -78,13 +107,12 @@ jobs:
         python-version: '3.12'
         cache: pip
 
-    - name: Cache Hugging Face models
-      uses: actions/cache@v4
+    - name: Restore Hugging Face models
+      uses: actions/cache/restore@v4
       with:
         path: ~/.cache/huggingface
-        key: hf-${{ runner.os }}-${{ hashFiles('tests/**/*.py') }}
-        restore-keys: |
-          hf-${{ runner.os }}-
+        key: hf-models-${{ hashFiles('scripts/prefetch_test_models.py') }}
+        fail-on-cache-miss: true
 
     - name: Install dependencies
       run: |

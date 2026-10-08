@@ -26,3 +26,13 @@ def base_model(tmp_path_factory):
     )).save_pretrained(path)
     BertTokenizerFast(str(path / "vocab.txt"), do_lower_case=True).save_pretrained(path)
     return str(path)
+
+
+@pytest.fixture
+def new_classifier(base_model):
+    """Factory for an untrained classifier on the tiny offline model."""
+    from adaptive_classifier import AdaptiveClassifier
+
+    def make(**config):
+        return AdaptiveClassifier(base_model, config=config, use_onnx=False, device="cpu")
+    return make
