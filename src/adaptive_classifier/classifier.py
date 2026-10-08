@@ -1306,7 +1306,16 @@ class AdaptiveClassifier(ModelHubMixin):
         # the new behaviour.
         saved_config = config_dict.get('config')
         if isinstance(saved_config, dict) and 'prototype_temperature' not in saved_config:
-            config_dict['config'] = {**saved_config, 'prototype_temperature': None}
+            # Saves from before 0.2.0 do not store the new-class weights either, and
+            # the fixed 0.3 / 0.7 split was the behaviour then. Without this they would
+            # pick up the new default (a ramp) and score classes with few examples
+            # differently. Saves that did store them keep their own values.
+            config_dict['config'] = {
+                'new_class_prototype_weight': 0.3,
+                'new_class_neural_weight': 0.7,
+                **saved_config,
+                'prototype_temperature': None,
+            }
 
         # Load examples
         with open(model_path / "examples.json", "r", encoding="utf-8") as f:

@@ -257,6 +257,49 @@ def test_a_pre_0_3_0_save_keeps_its_scoring(new_classifier, base_model, data, tm
         assert all(a == pytest.approx(b, abs=1e-4) for (_, a), (_, b) in zip(got, preds))
 
 
+def test_a_pre_0_2_0_save_with_small_classes_keeps_the_fixed_new_class_split(new_classifier, data, tmp_path):
+    """Saves from before 0.2.0 store neither the new-class weights nor a temperature. A class
+    with fewer than 10 examples must still be blended 0.3 / 0.7 on load, not pick up the ramp
+    that is the default for newly built classifiers (found by loading a stripped-down save
+    under both versions: the blend was (0.3, 0.7) in 0.2.0 and (0.85, 0.15) in 0.3.0)."""
+    import json
+    from adaptive_classifier import AdaptiveClassifier
+
+    X, y = data.classes(6, noise=0.2, seed=11)                      # 6 examples per class: under the threshold
+    legacy = fit(new_classifier, X, y, prototype_temperature=None,
+                 new_class_prototype_weight=0.3, new_class_neural_weight=0.7)
+    expected = {t: legacy.predict(t, k=5) for t in X[:6]}
+    legacy.save(str(tmp_path), include_onnx=False)
+
+    path = tmp_path / "config.json"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    for key in ("prototype_temperature", "new_class_prototype_weight", "new_class_neural_weight",
+                "head_steps", "head_learning_rate"):
+        saved["config"].pop(key, None)                                # a pre-0.2.0 config has none of these
+    path.write_text(json.dumps(saved), encoding="utf-8")
+
+    loaded = AdaptiveClassifier.load(str(tmp_path), use_onnx=False, device="cpu")
+    assert loaded._blend_weights("C0") == (0.3, 0.7)
+    for text, preds in expected.items():
+        got = loaded.predict(text, k=5)
+        assert [l for l, _ in got] == [l for l, _ in preds]
+        assert all(a == pytest.approx(b, abs=1e-4) for (_, a), (_, b) in zip(got, preds))
+
+
+def test_a_save_that_stored_its_own_new_class_weights_keeps_them(new_classifier, data, tmp_path):
+    import json
+    from adaptive_classifier import AdaptiveClassifier
+
+    X, y = data.classes(6, noise=0.2, seed=12)
+    fit(new_classifier, X, y, new_class_prototype_weight=0.6, new_class_neural_weight=0.4).save(
+        str(tmp_path), include_onnx=False)
+    path = tmp_path / "config.json"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    del saved["config"]["prototype_temperature"]                      # older than 0.3.0, but it stored the weights
+    path.write_text(json.dumps(saved), encoding="utf-8")
+    assert AdaptiveClassifier.load(str(tmp_path), use_onnx=False, device="cpu")._blend_weights("C0") == (0.6, 0.4)
+
+
 def test_new_saves_record_the_new_settings(new_classifier, data, tmp_path):
     import json
     X, y = data.classes(4, seed=8)
