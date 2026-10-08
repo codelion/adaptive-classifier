@@ -15,11 +15,8 @@ Usage:
     pip install onnxruntime numpy safetensors tokenizers
     python examples/portable_inference.py ./my_classifier "text to classify"
 
-It needs `tokenizer.json` next to the model. `AdaptiveClassifier.save` does not
-write one, so create it once with:
-
-    from transformers import AutoTokenizer
-    AutoTokenizer.from_pretrained("<base model>").save_pretrained("./my_classifier")
+`AdaptiveClassifier.save` writes `tokenizer.json` and the resolved pooling mode.
+For directories saved by 0.2.0 or earlier, see docs/deployment.md.
 """
 
 import json
@@ -49,10 +46,9 @@ class PortableClassifier:
         self.new_prototype_weight = settings.get("new_class_prototype_weight", 0.3)
         self.new_neural_weight = settings.get("new_class_neural_weight", 0.7)
 
-        # 'auto' is resolved at run time in Python (it reads the base model's
-        # sentence-transformers config), so it is never written to disk as
-        # 'mean' or 'cls'. Pass `pooling` yourself when config.json says 'auto'
-        # or has no pooling key: use what the base model was trained with
+        # Current versions save the resolved mode. Older directories say 'auto'
+        # or have no pooling key; pass `pooling` yourself for those: use what
+        # the base model was trained with
         # ('mean' for most sentence-transformers models, 'cls' for BGE). Classifiers
         # saved before 0.2.0 have no pooling key and behave as 'cls'.
         self.pooling = pooling or settings.get("pooling")

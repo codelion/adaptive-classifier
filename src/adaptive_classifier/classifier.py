@@ -534,6 +534,12 @@ class AdaptiveClassifier(ModelHubMixin):
         save_directory = Path(save_directory)
         os.makedirs(save_directory, exist_ok=True)
 
+        # 'auto' is resolved against the base model at run time, so persist the
+        # outcome. Other runtimes (ONNX in .NET/JS, ...) cannot repeat that
+        # lookup, and a reload should not depend on the Hub being reachable.
+        saved_settings = self.config.to_dict()
+        saved_settings['pooling'] = self._resolve_pooling()
+
         # Save configuration and metadata
         config_dict = {
             'model_name': self.model.config._name_or_path,
@@ -542,7 +548,7 @@ class AdaptiveClassifier(ModelHubMixin):
             'id_to_label': {str(k): v for k, v in self.id_to_label.items()},
             'train_steps': self.train_steps,
             'training_history': self.training_history,  # Save cumulative training counts
-            'config': self.config.to_dict(),
+            'config': saved_settings,
             'library_name': 'adaptive-classifier'  # Tell HuggingFace Hub this requires the adaptive-classifier library
         }
 
@@ -579,6 +585,13 @@ class AdaptiveClassifier(ModelHubMixin):
             json.dump(saved_examples, f, indent=2, sort_keys=True)
 
         save_file(tensor_dict, tensors_file)
+
+        # Ship the tokenizer so the directory is self-contained for runtimes
+        # that cannot call AutoTokenizer (tokenizer.json is the portable form).
+        try:
+            self.tokenizer.save_pretrained(save_directory)
+        except Exception as e:
+            logger.warning(f"Could not save tokenizer files: {e}")
 
         # Generate model card if it doesn't exist
         model_card_path = save_directory / "README.md"

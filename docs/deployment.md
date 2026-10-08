@@ -36,7 +36,7 @@ Encoders worth trying (all published on the Hugging Face Hub):
 
 Things that matter:
 
-- **Pooling.** The default `pooling: "auto"` reads the model's own sentence-transformers config, so the table above is handled for you in Python. See the "Pooling" section of the README.
+- **Pooling.** The default `pooling: "auto"` reads the model's own sentence-transformers config, so the table above is handled for you. The result is saved with the classifier. See the "Pooling" section of the README.
 - **Prefixes.** Some models expect a prefix on every input (E5 wants `"query: "`). Add it yourself to training and prediction texts, consistently.
 - **Mixed-language data works.** Good multilingual encoders place translations of the same sentence close together, so a class trained mostly on English examples will often recognise other languages. Add a few examples in each language you care about to firm it up.
 - **Always evaluate on your own data.** Multilingual quality varies a lot by language and domain; the library does not ship per-language benchmarks.
@@ -51,21 +51,17 @@ Things that matter:
 
 | File | Contents |
 |---|---|
-| `config.json` | Label maps (`id_to_label`), per-class `training_history`, and the `config` block: `pooling`, `max_length`, blend weights |
+| `config.json` | Label maps (`id_to_label`), per-class `training_history`, and the `config` block: resolved `pooling`, `max_length`, blend weights |
+| `tokenizer.json` and friends | The base model's tokenizer |
 | `model.safetensors` | `prototype_<label>` tensors (one vector per class) and `adaptive_head_model.{0,3,6}.{weight,bias}` for the neural head |
 | `examples.json` | A few representative training examples per class. Not needed for inference |
 | `onnx/model.onnx`, `onnx/model_quantized.onnx` | The transformer encoder only. It returns token embeddings, not a sentence vector or class scores |
 
 The encoder is the only large file. Everything else is tiny and framework-neutral (JSON plus safetensors, which has readers in most languages).
 
-Two files are **not** written and you must provide them:
+`save()` writes the tokenizer files (`tokenizer.json`, `tokenizer_config.json`, ...) next to the model, and records the **resolved** pooling mode (`mean` or `cls`) in `config.json`, so the directory is self-contained. Nothing needs to be looked up from the base model at inference time.
 
-- **`tokenizer.json`**. Create it once from the base model:
-  ```python
-  from transformers import AutoTokenizer
-  AutoTokenizer.from_pretrained("<base model name>").save_pretrained("./my_classifier")
-  ```
-- **A fixed pooling mode**, if `config.json` says `"pooling": "auto"`. Auto-detection happens in Python at run time by reading the base model's config, so the saved value is the literal string `auto`. Look up what your base model uses (the table above, or its `1_Pooling/config.json`) and hard-code it. Classifiers saved before 0.2.0 use `cls`.
+Directories saved by 0.2.0 or earlier are different. They have no tokenizer files, and their `config.json` has either no `pooling` key (meaning `cls`) or the literal `"auto"`. Re-save them with the current version, or generate the tokenizer once with `AutoTokenizer.from_pretrained("<base model>").save_pretrained("./my_classifier")` and pass the pooling mode to the reference script yourself (`mean` for most sentence-transformers models, `cls` for BGE).
 
 ### The inference algorithm
 
@@ -91,7 +87,7 @@ pip install onnxruntime numpy safetensors tokenizers
 python examples/portable_inference.py ./my_classifier "text to classify"
 ```
 
-It was checked against `AdaptiveClassifier.predict` on the same saved directory with both `mean` and `cls` pooling, and agrees to about 1e-7 (float32 rounding). Use it as the ground truth when you port: run the same inputs through both and compare scores.
+It is checked against `AdaptiveClassifier.predict` on the same saved directory with both `mean` and `cls` pooling (`tests/test_portable_export.py`), and agrees to float32 rounding. Use it as the ground truth when you port: run the same inputs through both and compare scores.
 
 ### Quantized or full-precision encoder
 
