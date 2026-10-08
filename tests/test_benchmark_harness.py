@@ -442,7 +442,7 @@ def test_loading_maps_class_ids_to_names(bench, monkeypatch):
 
 def good_plan(bench, **overrides):
     args = dict(datasets="ag_news,emotion", shots="4 16", seeds="3", methods="adaptive logreg",
-                model="sentence-transformers/all-MiniLM-L6-v2", max_test="1000")
+                model="acme/encoder-small", max_test="1000")
     args.update(overrides)
     return bench.plan(**args)
 
@@ -450,7 +450,7 @@ def good_plan(bench, **overrides):
 def test_plan_normalises_valid_input(bench):
     p = good_plan(bench, datasets=" ag_news , emotion,ag_news ", shots="16,4 4", methods="logreg  adaptive")
     assert p == {"datasets": ["ag_news", "emotion"], "shots": "4 16", "seeds": 3,
-                 "methods": "logreg adaptive", "model": "sentence-transformers/all-MiniLM-L6-v2",
+                 "methods": "logreg adaptive", "model": "acme/encoder-small",
                  "max_test": 1000}
 
 
