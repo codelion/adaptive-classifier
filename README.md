@@ -382,6 +382,10 @@ curl -s localhost:8000/predict -H 'content-type: application/json' -d '{"text": 
 
 Predictions, batches, conformal sets and out-of-distribution checks over HTTP, plus optional API-key-protected endpoints for adding examples and classes while it runs. One classifier is safe to share between threads, and `await classifier.apredict(...)` keeps an event loop responsive. See [docs/serving.md](docs/serving.md) and `docker/Dockerfile`.
 
+### How does it compare?
+
+A benchmark against [SetFit](https://github.com/huggingface/setfit) and logistic regression on the same encoder (accuracy, macro-F1, calibration, training time, latency, and the cost of adding one example) is in `scripts/benchmark_fewshot.py`, with a manually triggered GitHub workflow. See [docs/benchmark.md](docs/benchmark.md) for how it works and what it does and does not show.
+
 ### Fixing Mistakes and Knowing When to Abstain
 
 ```python

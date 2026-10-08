@@ -52,6 +52,11 @@ serve = [
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
 ]
+# Few-shot benchmark against SetFit: scripts/benchmark_fewshot.py (see docs/benchmark.md).
+benchmark = [
+    "setfit>=1.1.0",
+    "datasets>=2.14.0",
+]
 # Only needed to run the scripts/ benchmarks and data generators.
 scripts = [
     "tqdm>=4.65.0",

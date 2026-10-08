@@ -1,0 +1,167 @@
+name: Few-shot benchmark
+
+# Compares adaptive-classifier with SetFit and logistic regression on public datasets.
+# Run it by hand: Actions -> Few-shot benchmark -> Run workflow. It is not part of the test
+# suite because it downloads datasets, trains SetFit on a CPU, and takes a long time.
+# Results appear in the run summary and as downloadable artifacts. See docs/benchmark.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      datasets:
+        description: "Datasets, comma separated (ag_news, emotion, banking77)"
+        default: "ag_news,emotion"
+      shots:
+        description: "Training examples per class, space separated"
+        default: "4 16"
+      seeds:
+        description: "Random seeds (different few-shot samples), 1-10"
+        default: "3"
+      methods:
+        description: "Methods to run (adaptive adaptive-proto logreg setfit)"
+        default: "adaptive adaptive-proto logreg setfit"
+      model:
+        description: "Sentence encoder shared by every method"
+        default: "sentence-transformers/all-MiniLM-L6-v2"
+      max_test:
+        description: "Test examples per dataset (a fixed random subset)"
+        default: "1000"
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    # Validates the inputs and that each dataset loads, in seconds, before the long jobs start.
+    # Inputs reach the shell only as environment variables, never interpolated into a command.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      datasets: ${{ steps.plan.outputs.datasets }}
+      shots: ${{ steps.plan.outputs.shots }}
+      seeds: ${{ steps.plan.outputs.seeds }}
+      methods: ${{ steps.plan.outputs.methods }}
+      model: ${{ steps.plan.outputs.model }}
+      max_test: ${{ steps.plan.outputs.max_test }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Validate inputs
+      id: plan
+      env:
+        IN_DATASETS: ${{ inputs.datasets }}
+        IN_SHOTS: ${{ inputs.shots }}
+        IN_SEEDS: ${{ inputs.seeds }}
+        IN_METHODS: ${{ inputs.methods }}
+        IN_MODEL: ${{ inputs.model }}
+        IN_MAX_TEST: ${{ inputs.max_test }}
+      run: |
+        pip install numpy
+        python scripts/benchmark_fewshot.py plan \
+          --datasets "$IN_DATASETS" --shots "$IN_SHOTS" --seeds "$IN_SEEDS" \
+          --methods "$IN_METHODS" --model "$IN_MODEL" --max-test "$IN_MAX_TEST" > plan.json
+        cat plan.json
+        python - <<'PY' >> "$GITHUB_OUTPUT"
+        import json
+        plan = json.load(open("plan.json"))
+        print("datasets=" + json.dumps(plan["datasets"]))
+        for key in ("shots", "seeds", "methods", "model", "max_test"):
+            print(f"{key}={plan[key]}")
+        PY
+
+    - name: Check that every dataset loads
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        DATASETS: ${{ steps.plan.outputs.datasets }}
+      run: |
+        pip install datasets
+        python scripts/benchmark_fewshot.py check $(python -c "import json,os; print(' '.join(json.loads(os.environ['DATASETS'])))")
+
+  benchmark:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        dataset: ${{ fromJSON(needs.plan.outputs.datasets) }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: pip
+
+    - name: Cache Hugging Face downloads
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/huggingface
+        key: hf-benchmark-${{ needs.plan.outputs.model }}-${{ matrix.dataset }}
+
+    - name: Install
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch --index-url https://download.pytorch.org/whl/cpu
+        pip install -e ".[benchmark]"
+        pip list 2>/dev/null | grep -iE "^(torch|transformers|sentence-transformers|setfit|datasets|scikit-learn|adaptive-classifier) "
+
+    - name: Run benchmark
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        DATASET: ${{ matrix.dataset }}
+        SHOTS: ${{ needs.plan.outputs.shots }}
+        SEEDS: ${{ needs.plan.outputs.seeds }}
+        METHODS: ${{ needs.plan.outputs.methods }}
+        MODEL: ${{ needs.plan.outputs.model }}
+        MAX_TEST: ${{ needs.plan.outputs.max_test }}
+      run: |
+        # SHOTS and METHODS are space-separated lists validated by the plan job.
+        python scripts/benchmark_fewshot.py run \
+          --dataset "$DATASET" --shots $SHOTS --seeds "$SEEDS" --methods $METHODS \
+          --model "$MODEL" --max-test "$MAX_TEST" --out "results/$DATASET.json"
+
+    - name: Upload results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: results-${{ matrix.dataset }}
+        path: results/*.json
+        if-no-files-found: warn
+
+  summary:
+    needs: [plan, benchmark]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: results-*
+        path: results
+        merge-multiple: true
+
+    - name: Build the report
+      run: |
+        pip install numpy
+        if ls results/*.json >/dev/null 2>&1; then
+          python scripts/benchmark_fewshot.py report results/*.json --out benchmark-report.md > /dev/null
+          cat benchmark-report.md >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "No result files were produced; see the benchmark jobs." | tee benchmark-report.md >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-report
+        path: benchmark-report.md

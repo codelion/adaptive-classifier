@@ -249,8 +249,10 @@ def test_config_that_disagrees_with_the_weights_fails_loudly(saved):
 def test_onnx_failure_falls_back_to_a_working_pytorch_model(base_model, monkeypatch, caplog, error):
     """This is what happened in CI when the Hub rate-limited: the classifier must
     keep working on PyTorch and say why, not fail or pretend ONNX loaded."""
-    pytest.importorskip("optimum.onnxruntime")
-    from optimum.onnxruntime import ORTModelForFeatureExtraction
+    try:
+        from optimum.onnxruntime import ORTModelForFeatureExtraction
+    except ImportError:                     # not installed, or built for a different transformers
+        pytest.skip("optimum.onnxruntime is not importable in this environment")
 
     def broken(*args, **kwargs):
         raise error

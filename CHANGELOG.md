@@ -19,6 +19,8 @@
 - Async methods `apredict`, `apredict_batch` and `aadd_examples` that run in a worker thread.
 - A saved directory is self-contained for loading: the tokenizer saved next to the model is used instead of fetching the base model's repository, so an ONNX-saved classifier starts without Hub access.
 
+- **Few-shot benchmark** against SetFit and logistic regression: `scripts/benchmark_fewshot.py` and a manually triggered `Few-shot benchmark` workflow (accuracy, macro-F1, calibration error, training time, latency, and the cost of adding one example). Install with `pip install -e ".[benchmark]"`. See `docs/benchmark.md`.
+
 ### Changed (default behaviour: predictions change)
 - **The neural head is now actually trained.** It used to get about ten optimiser steps and stop at the first loss plateau, so it could not learn even a 2-D XOR from 120 examples. It now trains for at least `head_steps` (default 300) steps with a cosine-decayed `head_learning_rate` (default 0.003). Small memories take roughly 1-2 s per `add_examples` call; lower `head_steps` if you add examples very frequently.
 - **Prototype scores are sharper.** They are now `softmax(-distance² / prototype_temperature)` (default 0.25) instead of `softmax(exp(-distance))`, which barely separated the nearest class from the rest (about 0.45 vs 0.21), so a confident head could always outvote it. `prototype_temperature=None` restores the old scoring.
