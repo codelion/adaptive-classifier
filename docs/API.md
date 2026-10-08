@@ -130,6 +130,30 @@ Clear stored examples and prototypes.
 Parameters:
 - `labels`: Optional list of labels to clear. If given, this is the same as `forget(labels)` (unknown labels are ignored). If None, clears all stored examples and prototypes
 
+#### calibrate
+
+```python
+def calibrate(texts: List[str], labels: List[str]) -> Dict[str, float]
+```
+
+Fit confidence calibration (temperature scaling) on labelled examples the model was not trained on. Afterwards `predict`, `predict_batch` and `abstain_below` use calibrated probabilities; the winning class never changes. Returns `temperature` (above 1 means the model was over-confident), `n`, `accuracy`, and `ece_before` / `ece_after` / `nll_before` / `nll_after`. Adding a new class or forgetting one discards the calibration.
+
+#### calibration_report
+
+```python
+def calibration_report(texts, labels, calibrated=True, bins=10) -> Dict[str, float]
+```
+
+Accuracy, mean confidence, expected calibration error (`ece`) and `nll` on labelled data. Run it on a test set separate from the calibration set.
+
+#### predict_set
+
+```python
+def predict_set(text: str, alpha: float = 0.1) -> List[Tuple[str, float]]
+```
+
+Split-conformal prediction set: contains the true label with probability at least `1 - alpha` for inputs that look like the calibration data (an average guarantee, not per input). Never empty. Requires `calibrate` first.
+
 #### forget
 
 ```python

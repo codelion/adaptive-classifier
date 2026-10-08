@@ -9,6 +9,9 @@
 - `docs/deployment.md` and `examples/portable_inference.py`: run a saved classifier without PyTorch or FAISS (multilingual models, .NET, JavaScript).
 - `save()` now writes the tokenizer files and the resolved pooling mode, so a saved directory is self-contained.
 
+- `calibrate(texts, labels)` fits one temperature on held-out labelled data so confidences match how often the model is right, and `calibration_report(...)` measures accuracy, expected calibration error and NLL. `predict`, `predict_batch` and `abstain_below` then use calibrated probabilities. Calibration is saved with the model and discarded when the set of classes changes.
+- `predict_set(text, alpha=0.1)`: split-conformal prediction sets that contain the true label with probability at least `1 - alpha`.
+
 ### Changed (default behaviour: predictions change)
 - **The neural head is now actually trained.** It used to get about ten optimiser steps and stop at the first loss plateau, so it could not learn even a 2-D XOR from 120 examples. It now trains for at least `head_steps` (default 300) steps with a cosine-decayed `head_learning_rate` (default 0.003). Small memories take roughly 1-2 s per `add_examples` call; lower `head_steps` if you add examples very frequently.
 - **Prototype scores are sharper.** They are now `softmax(-distance² / prototype_temperature)` (default 0.25) instead of `softmax(exp(-distance))`, which barely separated the nearest class from the rest (about 0.45 vs 0.21), so a confident head could always outvote it. `prototype_temperature=None` restores the old scoring.
@@ -19,6 +22,7 @@
 - `clear_memory(labels=[...])` now removes those classes completely (it used to leave them in the label map and neural head, so they could still be predicted).
 
 ### Fixed
+- `predict_batch(k=...)` scored only `k` classes before blending, so with more than `k` classes its scores differed from `predict` for the same text. It now scores every class and trims to `k`.
 - Accuracy on small training sets (see above): the default configuration got only 75-92% of its own training data right on perfectly separable data with fewer than 10 examples per class.
 - Integer (or other non-string) labels corrupted a classifier on save/reload, duplicating classes. `add_examples` now rejects non-string labels with a clear error; convert with `str(label)`.
 - `predict(k=-1)` returned a silently truncated list; negative or non-integer `k` now raises `ValueError`.

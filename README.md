@@ -338,6 +338,24 @@ clf.classifier_.save("./model")               # the underlying AdaptiveClassifie
 
 `fit` starts over each time; `partial_fit` adds to what is already learned. A fitted estimator holds a FAISS index and can't be pickled, so save `classifier_` instead.
 
+### Calibrated Confidence and Prediction Sets
+
+Raw scores are not probabilities: a model can say 0.9 and be right 70% of the time. Fit a calibration on labelled examples the model was *not* trained on:
+
+```python
+info = classifier.calibrate(held_out_texts, held_out_labels)
+info["ece_before"], info["ece_after"]       # expected calibration error, lower is better
+
+classifier.predict(text)                    # confidences now match how often the model is right
+classifier.predict(text, abstain_below=0.8) # so thresholds like this mean what they say
+
+# A set of labels that contains the true one at least 90% of the time
+classifier.predict_set(text, alpha=0.1)     # [("billing", 0.55), ("refunds", 0.31)]
+classifier.calibration_report(test_texts, test_labels)   # check it on separate data
+```
+
+One easy input gives a one-label set; an ambiguous one gives several. Calibration is saved with the model and discarded if you add or forget a class; re-run it after substantial new data.
+
 ### Fixing Mistakes and Knowing When to Abstain
 
 ```python

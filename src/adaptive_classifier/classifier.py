@@ -19,6 +19,7 @@ import shutil
 from .models import Example, AdaptiveHead, ModelConfig
 from .memory import PrototypeMemory
 from .ewc import EWC
+from . import calibration as calibration_math
 from .strategic import (
     StrategicCostFunction, CostFunctionFactory, StrategicOptimizer, StrategicEvaluator
 )
@@ -28,7 +29,11 @@ logger = logging.getLogger(__name__)
 
 class AdaptiveClassifier(ModelHubMixin):
     """A flexible classifier that can adapt to new classes and examples."""
-    
+
+    # Set by `calibrate`. A class-level default keeps instances built without
+    # __init__ (the loaders do that) working.
+    calibration: Optional[Dict[str, Any]] = None
+
     def __init__(
         self,
         model_name: str,
@@ -170,6 +175,10 @@ class AdaptiveClassifier(ModelHubMixin):
         # Check for new classes
         new_classes = set(labels) - set(self.label_to_id.keys())
         is_adding_new_classes = len(new_classes) > 0
+
+        if is_adding_new_classes and self.calibration:
+            logger.warning("Discarding confidence calibration: the set of classes changed")
+            self.calibration = None
 
         # Update label mappings - sort new classes alphabetically for consistent IDs
         for label in sorted(new_classes):
@@ -449,11 +458,15 @@ class AdaptiveClassifier(ModelHubMixin):
             return []
 
         # If strategic mode is not enabled, use regular prediction
+        # Calibration rescales the whole distribution, so it needs every class.
+        internal_k = len(self.id_to_label) if self.calibration else k
         if not self.strategic_mode:
-            predictions = self._predict_regular(text, k)
+            predictions = self._predict_regular(text, internal_k)
         else:
             # Dual prediction system: blend strategic and regular predictions
-            predictions = self._predict_dual(text, k)
+            predictions = self._predict_dual(text, internal_k)
+        if self.calibration:
+            predictions = self._calibrate(predictions)[:k]
 
         if abstain_below is not None and (not predictions or predictions[0][1] < abstain_below):
             return []
@@ -484,6 +497,120 @@ class AdaptiveClassifier(ModelHubMixin):
         """
         limit = self.config.ood_threshold if threshold is None else threshold
         return self.ood_score(text) > limit
+
+    # --- calibration ---------------------------------------------------------------
+
+    def _calibrate(self, predictions: List[Tuple[str, float]]) -> List[Tuple[str, float]]:
+        """Apply the fitted temperature to a full (all-class) prediction list."""
+        if not self.calibration or not predictions:
+            return predictions
+        probs = calibration_math.apply_temperature(
+            np.array([score for _, score in predictions]), self.calibration['temperature']
+        )
+        calibrated = [(label, float(p)) for (label, _), p in zip(predictions, probs)]
+        return sorted(calibrated, key=lambda item: item[1], reverse=True)
+
+    def _distribution_matrix(self, texts: List[str]):
+        """Uncalibrated scores for each text as a matrix with columns in label-id order."""
+        saved, self.calibration = self.calibration, None
+        try:
+            n = len(self.id_to_label)
+            matrix = np.zeros((len(texts), n))
+            for row, text in enumerate(texts):
+                for label, score in self.predict(text, k=n):
+                    matrix[row, self.label_to_id[label]] = score
+        finally:
+            self.calibration = saved
+        return matrix
+
+    def _calibration_inputs(self, texts: List[str], labels: List[str]):
+        if not texts:
+            raise ValueError("Empty input lists")
+        if len(texts) != len(labels):
+            raise ValueError("Mismatched text and label lists")
+        self._validate_training_inputs(texts, labels)
+        unknown = sorted(set(labels) - set(self.label_to_id))
+        if unknown:
+            raise ValueError(f"Unknown labels: {unknown}")
+        return np.array([self.label_to_id[label] for label in labels])
+
+    def calibrate(self, texts: List[str], labels: List[str]) -> Dict[str, float]:
+        """Fit confidence calibration on labelled examples the model was *not* trained on.
+
+        Learns one temperature so that confidences match how often the model is
+        actually right (a score of 0.9 should mean about 90%), and records the
+        scores needed by `predict_set`. After this, `predict`, `predict_batch`
+        and `abstain_below` use the calibrated probabilities; the predicted
+        class never changes. Calibrating on data the model was trained on
+        makes it look better than it is, so hold some data out.
+
+        Re-run it after substantial additions of new data. Adding a new class,
+        or forgetting one, discards the calibration because the class set it
+        described no longer exists.
+
+        Returns:
+            The fitted `temperature` (above 1: the model was over-confident),
+            and `ece` / `nll` before and after (lower is better).
+        """
+        targets = self._calibration_inputs(texts, labels)
+        if len(texts) < 2 or len(self.label_to_id) < 2:
+            raise ValueError("Calibration needs at least 2 examples and 2 classes")
+        if len(texts) < 20:
+            logger.warning(f"Calibrating on only {len(texts)} examples; the estimate will be noisy")
+
+        probs = self._distribution_matrix(texts)
+        temperature = calibration_math.fit_temperature(probs, targets)
+        calibrated = calibration_math.apply_temperature(probs, temperature)
+        scores = calibration_math.nonconformity_scores(calibrated, targets)
+        self.calibration = {
+            'temperature': temperature,
+            'scores': sorted(float(score) for score in scores),
+            'n': int(len(targets)),
+        }
+        before = calibration_math.summarise(probs, targets)
+        after = calibration_math.summarise(calibrated, targets)
+        return {
+            'temperature': temperature,
+            'n': before['n'],
+            'ece_before': before['ece'], 'ece_after': after['ece'],
+            'nll_before': before['nll'], 'nll_after': after['nll'],
+            'accuracy': before['accuracy'],
+        }
+
+    def calibration_report(self, texts: List[str], labels: List[str],
+                           calibrated: bool = True, bins: int = 10) -> Dict[str, float]:
+        """Accuracy, mean confidence, expected calibration error (ECE) and NLL on labelled data.
+
+        Use it on a *separate* test set to check that calibration generalises.
+        With `calibrated=False` the fitted temperature is ignored.
+        """
+        targets = self._calibration_inputs(texts, labels)
+        probs = self._distribution_matrix(texts)
+        if calibrated and self.calibration:
+            probs = calibration_math.apply_temperature(probs, self.calibration['temperature'])
+        return calibration_math.summarise(probs, targets, bins)
+
+    def predict_set(self, text: str, alpha: float = 0.1) -> List[Tuple[str, float]]:
+        """Labels that contain the true one with probability at least `1 - alpha`.
+
+        A split-conformal prediction set: when the model is sure the set has
+        one label, and it grows with uncertainty. The guarantee holds for
+        inputs that look like the calibration data (exchangeable with it) and
+        is an average over inputs, not a promise for each one. The top label is
+        always included, so the set is never empty (which can only make
+        coverage higher). Requires `calibrate` first.
+
+        Returns:
+            (label, calibrated probability) pairs, most likely first.
+        """
+        if not self.calibration:
+            raise ValueError("predict_set needs calibration; call calibrate(texts, labels) first")
+        if not text:
+            raise ValueError("Empty input text")
+        threshold = calibration_math.conformal_threshold(self.calibration['scores'], alpha)
+        full = self.predict(text, k=len(self.id_to_label))
+        chosen = [(label, p) for label, p in full if 1.0 - p <= threshold]
+        return chosen or full[:1]
 
     def forget(self, labels: Union[str, List[str]]):
         """Remove one or more classes entirely.
@@ -566,6 +693,9 @@ class AdaptiveClassifier(ModelHubMixin):
         """Remove classes from every structure that tracks them."""
         ordered = sorted(self.label_to_id.items(), key=lambda item: item[1])
         keep = [(label, idx) for label, idx in ordered if label not in drop]
+        if self.calibration:
+            logger.warning("Discarding confidence calibration: the set of classes changed")
+            self.calibration = None
 
         for label in drop:
             self.memory.remove_class(label)
@@ -716,6 +846,7 @@ class AdaptiveClassifier(ModelHubMixin):
             'train_steps': self.train_steps,
             'training_history': self.training_history,  # Save cumulative training counts
             'ood_radii': {label: self.memory.class_radius(label) for label in self.memory.prototypes},
+            'calibration': self.calibration,
             'config': saved_settings,
             'library_name': 'adaptive-classifier'  # Tell HuggingFace Hub this requires the adaptive-classifier library
         }
@@ -1068,6 +1199,7 @@ class AdaptiveClassifier(ModelHubMixin):
         
         # Restore training history with backward compatibility
         classifier.training_history = config_dict.get('training_history', {})
+        classifier.calibration = config_dict.get('calibration')
 
         # Load tensors
         tensors = load_file(model_path / "model.safetensors")
@@ -1597,13 +1729,16 @@ This model:
             
             # Get predictions for each embedding
             batch_predictions = []
+            num_classes = len(self.id_to_label)
             for embedding in batch_embeddings:
-                # Get prototype predictions
+                # Score every class, as `predict` does, and trim to k at the end.
+                # Restricting the lookup to k classes made the scores depend on k
+                # whenever there were more than k classes.
                 proto_preds = self.memory.get_nearest_prototypes(
                     embedding,
-                    k=k
+                    k=num_classes or k
                 )
-                
+
                 # Get neural predictions if available
                 if self.adaptive_head is not None:
                     self.adaptive_head.eval()
@@ -1614,18 +1749,15 @@ This model:
                         # Squeeze batch dimension
                         logits = logits.squeeze(0)
                         probs = F.softmax(logits, dim=0)
-                        
-                        values, indices = torch.topk(
-                            probs,
-                            min(k, len(self.id_to_label))
-                        )
+
+                        values, indices = torch.topk(probs, num_classes)
                         head_preds = [
                             (self.id_to_label[idx.item()], val.item())
                             for val, idx in zip(values, indices)
                         ]
                 else:
                     head_preds = []
-                
+
                 # Combine predictions with the configured weights. This path
                 # used to hardcode 0.7/0.3, so `predict` and `predict_batch`
                 # could disagree once a caller changed the config.
@@ -1637,22 +1769,22 @@ This model:
                     combined_scores[label] = (
                         combined_scores.get(label, 0) + score * self._blend_weights(label)[1]
                     )
-                
+
                 # Sort and normalize predictions
                 predictions = sorted(
                     combined_scores.items(),
                     key=lambda x: x[1],
                     reverse=True
                 )
-                
-                # Normalize scores
                 total = sum(score for _, score in predictions)
                 if total > 0:
-                    predictions = [(label, score/total) 
+                    predictions = [(label, score/total)
                                 for label, score in predictions]
-                
+
+                if self.calibration:
+                    predictions = self._calibrate(predictions)
                 batch_predictions.append(predictions[:k])
-            
+
             all_predictions.extend(batch_predictions)
         
         return all_predictions
