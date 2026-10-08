@@ -193,3 +193,28 @@ def test_portable_reference_needs_a_pooling_mode_for_legacy_configs(base_model, 
     actual = dict(portable.predict(QUERIES[0], k=3))
     for label in expected:
         assert float(actual[label]) == pytest.approx(expected[label], abs=1e-4)
+
+
+# --- the reference tracks every branch of the scoring math ---------------------------------
+
+@pytest.mark.skipif(not _onnx_available(), reason="optimum[onnxruntime] not installed")
+@pytest.mark.parametrize("config", [
+    {"prototype_temperature": None},                                   # legacy scoring
+    {"prototype_temperature": 0.1},
+    {"new_class_prototype_weight": 0.3, "new_class_neural_weight": 0.7},  # fixed split below threshold
+    {"new_class_example_threshold": 4},                                # some classes established
+    {"prototype_weight": 0.5, "neural_weight": 0.5},
+], ids=["legacy-scoring", "temperature-0.1", "fixed-new-class", "mixed-established", "even-blend"])
+def test_portable_reference_matches_predict_for_every_scoring_branch(base_model, tmp_path, config):
+    pytest.importorskip("tokenizers")
+    clf = _trained(base_model, pooling="mean", **config)
+    clf.add_examples(["great product love it"] * 6, ["pos"] * 6)      # 'pos' now has more examples than the rest
+    clf.save(str(tmp_path), include_onnx=True, quantize_onnx=False)
+
+    portable = _load_reference()(tmp_path, prefer_quantized=False)
+    for query in QUERIES:
+        expected = dict(clf.predict(query, k=3))
+        actual = dict(portable.predict(query, k=3))
+        assert actual.keys() == expected.keys()
+        for label in expected:
+            assert float(actual[label]) == pytest.approx(expected[label], abs=1e-4)

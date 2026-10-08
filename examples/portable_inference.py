@@ -43,8 +43,12 @@ class PortableClassifier:
         self.prototype_weight = settings.get("prototype_weight", 0.7)
         self.neural_weight = settings.get("neural_weight", 0.3)
         self.new_threshold = settings.get("new_class_example_threshold", 10)
-        self.new_prototype_weight = settings.get("new_class_prototype_weight", 0.3)
-        self.new_neural_weight = settings.get("new_class_neural_weight", 0.7)
+        # None (the default since 0.3.0) means the head's weight ramps up with
+        # the number of examples; both set means a fixed split below the threshold.
+        self.new_prototype_weight = settings.get("new_class_prototype_weight")
+        self.new_neural_weight = settings.get("new_class_neural_weight")
+        # None selects the legacy scoring used before 0.3.0.
+        self.temperature = settings.get("prototype_temperature")
 
         # Current versions save the resolved mode. Older directories say 'auto'
         # or have no pooling key; pass `pooling` yourself for those: use what
@@ -110,24 +114,34 @@ class PortableClassifier:
                 x = np.maximum(x, 0.0)
         return softmax(x)
 
+    def _weights(self, label):
+        """Prototype and neural weight for one class (see AdaptiveClassifier._blend_weights)."""
+        trained = self.cfg.get("training_history", {}).get(label, 0)
+        if trained >= self.new_threshold:
+            return self.prototype_weight, self.neural_weight
+        if self.new_prototype_weight is not None and self.new_neural_weight is not None:
+            return self.new_prototype_weight, self.new_neural_weight
+        share = trained / self.new_threshold
+        return (1 - share) + share * self.prototype_weight, share * self.neural_weight
+
     def predict(self, text, k=5):
         emb = self.embed(text)
 
-        # Prototype score: exp(-squared L2 distance), softmaxed over classes.
+        # Prototype score: softmax over classes of -squared_L2_distance / temperature
+        # (legacy, when temperature is null: softmax of exp(-squared_L2_distance)).
         labels = list(self.prototypes)
-        sims = np.array([np.exp(-np.sum((p - emb) ** 2)) for p in self.prototypes.values()])
-        proto_scores = dict(zip(labels, softmax(sims)))
+        dist = np.array([np.sum((p - emb) ** 2) for p in self.prototypes.values()])
+        if self.temperature:
+            proto_scores = dict(zip(labels, softmax(-dist / self.temperature)))
+        else:
+            proto_scores = dict(zip(labels, softmax(np.exp(-dist))))
         head_scores = (
             dict(zip(self.labels, self._head_probs(emb))) if self.head is not None else {}
         )
 
-        history = self.cfg.get("training_history", {})
         combined = {}
         for label in self.labels:
-            if history.get(label, 0) < self.new_threshold:
-                wp, wn = self.new_prototype_weight, self.new_neural_weight
-            else:
-                wp, wn = self.prototype_weight, self.neural_weight
+            wp, wn = self._weights(label)
             combined[label] = proto_scores.get(label, 0.0) * wp + head_scores.get(label, 0.0) * wn
 
         total = sum(combined.values())

@@ -161,11 +161,34 @@ class ModelConfig:
         # to be a knob that works.
         self.prototype_weight = self.config.get('prototype_weight', 0.7)
         self.neural_weight = self.config.get('neural_weight', 0.3)
-        # A class with few examples has an unreliable prototype, so the neural
-        # head is trusted more until the class is established.
+        # A class with few examples has little evidence behind either signal, and
+        # a neural head fitted to a handful of points is the less trustworthy of
+        # the two (it can confidently outvote a correct prototype). Until a class
+        # has `new_class_example_threshold` examples the head's weight therefore
+        # ramps up linearly from zero to `neural_weight`, with the prototype
+        # taking the rest. Before 0.3.0 the opposite held: such classes used a
+        # fixed 0.3 prototype / 0.7 head split, which scored 0.55-0.73 on
+        # separable synthetic data that prototypes alone got 100% on.
+        # Setting both new_class_* weights restores a fixed split for such classes.
         self.new_class_example_threshold = self.config.get('new_class_example_threshold', 10)
-        self.new_class_prototype_weight = self.config.get('new_class_prototype_weight', 0.3)
-        self.new_class_neural_weight = self.config.get('new_class_neural_weight', 0.7)
+        self.new_class_prototype_weight = self.config.get('new_class_prototype_weight', None)
+        self.new_class_neural_weight = self.config.get('new_class_neural_weight', None)
+
+        # Prototype scores are softmax(-squared_distance / temperature) over
+        # classes. A small temperature sharpens them; before 0.3.0 the score was
+        # softmax(exp(-distance)), whose output barely distinguished the nearest
+        # class from the rest (about 0.45 vs 0.21), so a confident head could
+        # always outvote it. None restores that legacy scoring, which
+        # classifiers saved before 0.3.0 keep when they are loaded.
+        self.prototype_temperature = self.config.get('prototype_temperature', 0.25)
+
+        # Neural head training. The head is trained for at least `head_steps`
+        # optimiser steps with a cosine-decayed `head_learning_rate`. Before
+        # 0.3.0 it got about 10 steps and stopped at the first loss plateau,
+        # which left it unable to learn even a 2-D XOR from 120 examples.
+        # Lower `head_steps` (e.g. 100) if you add examples very frequently.
+        self.head_steps = self.config.get('head_steps', 300)
+        self.head_learning_rate = self.config.get('head_learning_rate', 0.003)
         self.min_confidence = self.config.get('min_confidence', 0.1)
 
         # Out-of-distribution detection. A query is scored by how far it sits
@@ -226,6 +249,9 @@ class ModelConfig:
             'new_class_example_threshold': self.new_class_example_threshold,
             'new_class_prototype_weight': self.new_class_prototype_weight,
             'new_class_neural_weight': self.new_class_neural_weight,
+            'prototype_temperature': self.prototype_temperature,
+            'head_steps': self.head_steps,
+            'head_learning_rate': self.head_learning_rate,
             'min_confidence': self.min_confidence,
             'ood_threshold': self.ood_threshold,
             'ood_min_radius': self.ood_min_radius,

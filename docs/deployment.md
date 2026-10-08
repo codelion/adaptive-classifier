@@ -73,9 +73,12 @@ Given the files above, `predict(text)` is:
    - `mean`: sum of token vectors weighted by `attention_mask`, divided by the number of real tokens.
    - `cls`: the first token's vector.
 4. **L2-normalise** the vector.
-5. **Prototype scores.** For each class prototype `p`, compute `exp(-||p - v||²)` (squared Euclidean distance), then take a softmax across classes.
+5. **Prototype scores.** For each class prototype `p`, compute the squared Euclidean distance `d = ||p - v||²`, then take a softmax of `-d / prototype_temperature` across classes (the default temperature is 0.25). If `prototype_temperature` is `null` in `config.json`, the classifier predates 0.3.0 and uses the legacy score instead: a softmax of `exp(-d)`.
 6. **Neural head scores** (skip if `model.safetensors` has no head). Compute `h1 = ReLU(W0·v + b0)`, `h2 = ReLU(W3·h1 + b3)`, `logits = W6·h2 + b6`, then softmax. Dropout is inactive at inference. Weights are stored as `(out, in)`.
-7. **Blend per class.** `score = proto_weight · proto_score + neural_weight · head_score`. A class with fewer than `new_class_example_threshold` (default 10) entries in `training_history` uses the `new_class_*` weights (default 0.3 / 0.7) instead of `prototype_weight` / `neural_weight` (default 0.7 / 0.3).
+7. **Blend per class.** `score = proto_weight · proto_score + neural_weight · head_score`, where the weights depend on how many examples the class was trained on (`training_history` in `config.json`):
+   - With at least `new_class_example_threshold` examples (default 10): `prototype_weight` and `neural_weight` (defaults 0.7 and 0.3).
+   - With fewer, and both `new_class_prototype_weight` and `new_class_neural_weight` set: those two fixed values (this is how classifiers saved before 0.3.0 behave: 0.3 and 0.7).
+   - With fewer, and those two unset (`null`, the default since 0.3.0): the head's weight ramps up from zero. With `share = examples / threshold`, the prototype weight is `(1 - share) + share · prototype_weight` and the neural weight is `share · neural_weight`.
 8. **Normalise** the blended scores to sum to 1 and sort descending.
 
 This applies to the default (non-strategic) mode. Strategic mode adds extra steps that are not covered here.

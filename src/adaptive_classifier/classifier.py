@@ -6,6 +6,7 @@ from transformers import AutoModel, AutoTokenizer
 from typing import List, Dict, Optional, Tuple, Any, Set, Union
 import logging
 import copy
+import math
 import numbers
 from pathlib import Path
 from safetensors.torch import save_file, load_file
@@ -949,6 +950,15 @@ class AdaptiveClassifier(ModelHubMixin):
         if isinstance(saved_config, dict) and 'pooling' not in saved_config:
             config_dict['config'] = {**saved_config, 'pooling': 'cls'}
 
+        # Likewise, classifiers saved before 0.3.0 were built (head included)
+        # with the legacy prototype scoring and carry explicit new-class weights
+        # in their stored config. Keep that scoring so their predictions do not
+        # change on upgrade; retrain, or set `prototype_temperature`, to adopt
+        # the new behaviour.
+        saved_config = config_dict.get('config')
+        if isinstance(saved_config, dict) and 'prototype_temperature' not in saved_config:
+            config_dict['config'] = {**saved_config, 'prototype_temperature': None}
+
         # Load examples
         with open(model_path / "examples.json", "r", encoding="utf-8") as f:
             saved_examples = json.load(f)
@@ -1434,16 +1444,27 @@ This model:
     def _blend_weights(self, label: str) -> Tuple[float, float]:
         """Prototype and neural weights for one label.
 
-        A class the model has barely seen has an unreliable prototype, so the
-        neural head carries more of the decision until the class is
-        established. Both regimes are configurable; before 0.2.0 these were
-        hardcoded and `prototype_weight` did nothing.
+        A class with fewer than `new_class_example_threshold` examples has too
+        little evidence behind the neural head, so the head's weight ramps up
+        linearly from zero and the prototype carries the rest. With a fixed
+        `new_class_prototype_weight` and `new_class_neural_weight` both set,
+        such classes use that split instead (the behaviour before 0.3.0, whose
+        defaults were 0.3 / 0.7).
         """
+        config = self.config
+        established = (config.prototype_weight, config.neural_weight)
         trained = self.training_history.get(label, 0)
-        if trained < getattr(self.config, 'new_class_example_threshold', 10):
-            return (getattr(self.config, 'new_class_prototype_weight', 0.3),
-                    getattr(self.config, 'new_class_neural_weight', 0.7))
-        return (self.config.prototype_weight, self.config.neural_weight)
+        threshold = getattr(config, 'new_class_example_threshold', 10)
+        if trained >= threshold:
+            return established
+
+        fixed_proto = getattr(config, 'new_class_prototype_weight', None)
+        fixed_neural = getattr(config, 'new_class_neural_weight', None)
+        if fixed_proto is not None and fixed_neural is not None:
+            return (fixed_proto, fixed_neural)
+
+        share = trained / threshold          # 0 for a brand-new class, 1 at the threshold
+        return ((1 - share) + share * established[0], share * established[1])
 
     def _resolve_pooling(self) -> str:
         """Decide how to pool token embeddings into one vector per text.
@@ -1677,101 +1698,63 @@ This model:
         return self
     
     def _train_adaptive_head(self, epochs: int = 10):
-        """Train the adaptive head with improved stability."""
+        """Train the adaptive head on every stored example.
+
+        Runs `max(epochs * batches_per_epoch, head_steps)` optimiser steps with
+        a cosine-decayed learning rate and no early stopping. The step floor
+        matters on small memories: ten epochs over a few dozen examples is only
+        about ten steps, which is far too few for the head to learn anything.
+        """
         if not self.memory.examples:
             return
-            
-        # Prepare training data
+
         all_embeddings = []
         all_labels = []
-        
+
         # Sort examples for deterministic order
         for label in sorted(self.memory.examples.keys()):
             examples = sorted(self.memory.examples[label], key=lambda x: x.text)
             for example in examples:
                 all_embeddings.append(example.embedding)
-                # Convert string labels to numeric indices
                 all_labels.append(self.label_to_id[example.label])
-        
-        all_embeddings = torch.stack(all_embeddings)
-        # Ensure labels are Long tensor
-        all_labels = torch.tensor(all_labels, dtype=torch.long, device=self.device)
-        
-        # Normalize embeddings for stable training
-        all_embeddings = F.normalize(all_embeddings, p=2, dim=1)
-        
-        # Create deterministic data loader
-        dataset = torch.utils.data.TensorDataset(all_embeddings, all_labels)
-        loader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=min(32, len(all_embeddings)),
-            shuffle=True,
-            generator=torch.Generator().manual_seed(42)
-        )
-        
-        # Training setup
+
+        embeddings = F.normalize(torch.stack(all_embeddings), p=2, dim=1).to(self.device)
+        labels = torch.tensor(all_labels, dtype=torch.long, device=self.device)
+
+        batch_size = min(32, len(embeddings))
+        batches_per_epoch = math.ceil(len(embeddings) / batch_size)
+        total_steps = max(epochs * batches_per_epoch,
+                          int(getattr(self.config, 'head_steps', 0) or 0))
+
         self.adaptive_head.train()
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.AdamW(
             self.adaptive_head.parameters(),
-            lr=0.001,
+            lr=getattr(self.config, 'head_learning_rate', 0.001),
             weight_decay=0.01,
             betas=(0.9, 0.999)
         )
-        
-        # Learning rate scheduler for stability
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode='min',
-            factor=0.5,
-            patience=2,
-        )
-        
-        best_loss = float('inf')
-        patience_counter = 0
-        patience = 3
-        
-        for epoch in range(epochs):
-            total_loss = 0
-            for batch_embeddings, batch_labels in loader:
-                batch_embeddings = batch_embeddings.to(self.device)
-                batch_labels = batch_labels.to(self.device)
-                
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
+        generator = torch.Generator().manual_seed(42)
+
+        step = 0
+        while step < total_steps:
+            order = torch.randperm(len(embeddings), generator=generator)
+            for start in range(0, len(order), batch_size):
+                index = order[start:start + batch_size]
                 optimizer.zero_grad()
-                outputs = self.adaptive_head(batch_embeddings)
-                
-                # Add shape debugging
-                if epoch == 0 and total_loss == 0:  # Only for first batch of first epoch
-                    logger.debug(f"outputs shape: {outputs.shape}")
-                    logger.debug(f"batch_labels shape: {batch_labels.shape}")
-                    logger.debug(f"batch_labels content: {batch_labels}")
-                
-                loss = criterion(outputs, batch_labels)
+                loss = criterion(self.adaptive_head(embeddings[index]), labels[index])
                 loss.backward()
-                
-                torch.nn.utils.clip_grad_norm_(
-                    self.adaptive_head.parameters(),
-                    max_norm=1.0
-                )
+                torch.nn.utils.clip_grad_norm_(self.adaptive_head.parameters(), max_norm=1.0)
                 optimizer.step()
-                
-                total_loss += loss.item()
-            
-            avg_loss = total_loss / len(loader)
-            scheduler.step(avg_loss)
-            
-            # Early stopping check
-            if avg_loss < best_loss:
-                best_loss = avg_loss
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= patience:
-                    logger.debug(f"Early stopping at epoch {epoch + 1}")
+                scheduler.step()
+                step += 1
+                if step >= total_steps:
                     break
-        
+
+        self.adaptive_head.eval()
         self.train_steps += 1
-    
+
     def _update_adaptive_head(self):
         """Update adaptive head for new classes."""
         num_classes = len(self.label_to_id)

@@ -144,16 +144,9 @@ Classifiers saved before 0.2.0 keep CLS pooling when reloaded, so upgrading does
 not change their predictions. Retrain, or pass `pooling` explicitly, to pick up
 the new behaviour.
 
-## Prototype and neural weights
+## How a prediction is made
 
-A prediction mixes two signals: similarity to the class prototypes, and the
-trained neural head. `prototype_weight` and `neural_weight` control the mix.
-
-Both keys existed before 0.2.0 but were ignored. Every prediction path used a
-hardcoded 0.7 / 0.3, so `predict` and `predict_batch` could also disagree once a
-caller changed the config. They work now, and the best split depends on how well
-your encoder separates your classes: an encoder that bunches everything together
-produces weak prototypes and is better off leaning on the head.
+A prediction mixes two signals: the **prototype score** (how close the text is to each class's mean embedding) and the **neural head** (a small trained network on the same embeddings). `prototype_weight` and `neural_weight` (default 0.7 / 0.3) control the mix.
 
 ```python
 classifier = AdaptiveClassifier(
@@ -162,10 +155,15 @@ classifier = AdaptiveClassifier(
 )
 ```
 
-A class with few examples has an unreliable prototype, so it leans on the head
-until it is established. That is configurable too, via
-`new_class_example_threshold` (default 10), `new_class_prototype_weight` (0.3)
-and `new_class_neural_weight` (0.7).
+The best split depends on how well your encoder separates your classes: an encoder that bunches everything together produces weak prototypes and is better off leaning on the head.
+
+**Classes with few examples.** Until a class has `new_class_example_threshold` examples (default 10), the head's weight ramps up linearly from zero to `neural_weight` and the prototype takes the rest, so a brand-new class is judged almost entirely by its prototype. (Before 0.3.0 such classes used a fixed 0.3 / 0.7 split in favour of the head, and a head fitted to a handful of points could confidently outvote a correct prototype. To get a fixed split back, set both `new_class_prototype_weight` and `new_class_neural_weight`.)
+
+**Prototype sharpness.** Prototype scores are `softmax(-distance² / prototype_temperature)` with a default temperature of 0.25. Lower values make the nearest class stand out more. Set `prototype_temperature` to `None` for the scoring used before 0.3.0, which barely separated the nearest class from the rest.
+
+**Head training.** The head is trained for at least `head_steps` optimiser steps (default 300) with a cosine-decayed `head_learning_rate` (default 0.003). That takes roughly 1-2 seconds on a small memory; lower `head_steps` (for example to 100) if you add examples very frequently. Before 0.3.0 the head got about ten steps, too few to learn even a simple XOR pattern, which prototypes alone cannot separate.
+
+Classifiers saved before 0.3.0 keep their old scoring when reloaded, so upgrading does not change their predictions. Retrain, or set the keys above, to adopt the new behaviour.
 
 ## ⚡ Quick Start
 

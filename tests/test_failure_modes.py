@@ -321,7 +321,7 @@ def test_random_operation_sequences_keep_every_structure_consistent(new_classifi
     pool = ["great love", "good fast", "terrible hate", "awful bad", "okay fine", "cheap works",
             "slow broke", "very good"]
     names = ["a", "b", "c", "d", "e"]
-    clf = new_classifier()
+    clf = new_classifier(head_steps=20)
     added = []                                  # (text, label) pairs currently believed present
 
     for _ in range(25):
