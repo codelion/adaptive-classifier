@@ -44,6 +44,7 @@ test = [
     "psutil",
     "hypothesis>=6.80.0",
     "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
     "httpx>=0.24.0",
 ]
 # HTTP server: python -m adaptive_classifier.serving ./model
