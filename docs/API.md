@@ -353,3 +353,26 @@ classifier2 = AdaptiveClassifier("bert-base-uncased")
 # ... train both classifiers ...
 classifier1.merge_classifiers(classifier2)
 ```
+
+## SklearnAdaptiveClassifier
+
+```python
+SklearnAdaptiveClassifier(model_name="sentence-transformers/all-MiniLM-L6-v2",
+                          config=None, device=None, use_onnx="auto",
+                          trust_remote_code=False)
+```
+
+scikit-learn estimator wrapping `AdaptiveClassifier`. `X` is a 1-D sequence of strings (a single column is also accepted); `y` holds string or integer labels, which `predict` returns unchanged.
+
+| Method / attribute | Description |
+|---|---|
+| `fit(X, y)` | Fit from scratch; returns `self` |
+| `partial_fit(X, y, classes=None)` | Add examples and any new classes to what is already learned. If `classes` is given, `y` must stay within it |
+| `predict(X)` | Most likely class per text |
+| `predict_proba(X)` | Probabilities, columns ordered as `classes_` |
+| `predict_log_proba(X)` | Log of `predict_proba` |
+| `score(X, y)` | Accuracy |
+| `classes_` | Sorted labels seen so far |
+| `classifier_` | The underlying fitted `AdaptiveClassifier` (`save`, `push_to_hub`, `forget`, `remove_examples`, `is_ood`, ...) |
+
+Hyperparameters such as `prototype_weight` go inside `config`, so grid searches take `{"config": [{...}, {...}]}`. Fitted estimators cannot be pickled (they hold a FAISS index); persist `classifier_` with `save`.

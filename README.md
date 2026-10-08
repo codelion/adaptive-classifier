@@ -318,6 +318,28 @@ Any multilingual encoder works as the base model, and a saved classifier can be 
 
 ## Advanced Usage
 
+### scikit-learn Interface
+
+`SklearnAdaptiveClassifier` works with `Pipeline`, `cross_val_score` and `GridSearchCV`. `X` is a list of strings.
+
+```python
+from adaptive_classifier import SklearnAdaptiveClassifier
+from sklearn.model_selection import cross_val_score
+
+clf = SklearnAdaptiveClassifier("sentence-transformers/all-MiniLM-L6-v2")
+clf.fit(texts, labels)
+clf.predict(["Where is my refund?"])          # class labels
+clf.predict_proba(["Where is my refund?"])    # columns follow clf.classes_
+cross_val_score(clf, texts, labels, cv=5)
+
+# The library's strength: keep learning, including brand-new classes
+clf.partial_fit(["App crashes on login"], ["bug"])
+
+clf.classifier_.save("./model")               # the underlying AdaptiveClassifier
+```
+
+`fit` starts over each time; `partial_fit` adds to what is already learned. A fitted estimator holds a FAISS index and can't be pickled, so save `classifier_` instead.
+
 ### Fixing Mistakes and Knowing When to Abstain
 
 ```python
