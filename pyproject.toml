@@ -1,11 +1,66 @@
 [build-system]
-requires = [
-    "setuptools>=64.0.0",
-    "wheel",
-    "packaging>=20.0",
-    "pip>=19.3.1",
-]
+requires = ["setuptools>=64.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "adaptive-classifier"
+dynamic = ["version"]
+description = "A flexible, adaptive classification system for dynamic text classification"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "codelion", email = "codelion@okyasoft.com" }]
+keywords = ["text-classification", "continuous-learning", "online-learning", "few-shot", "onnx", "transformers"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# ONNX Runtime (via optimum) stays in the core install: the default CPU path
+# uses it, and the README advertises faster CPU inference out of the box.
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "safetensors>=0.3.1",
+    "faiss-cpu>=1.7.4",  # use faiss-gpu for GPU support
+    "numpy>=1.24.0",
+    "scikit-learn>=1.3.0",
+    "huggingface_hub>=0.17.0",
+    "optimum[onnxruntime]>=1.14.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-randomly>=3.12.0",
+    "psutil",
+]
+# Only needed to run the scripts/ benchmarks and data generators.
+scripts = [
+    "tqdm>=4.65.0",
+    "textdistance",
+    "datasets",
+    "sentence-transformers",
+    "openai",
+]
+
+[project.urls]
+Homepage = "https://github.com/codelion/adaptive-classifier"
+"Bug Tracker" = "https://github.com/codelion/adaptive-classifier/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "adaptive_classifier.__version__" }
 
 [tool.pytest.ini_options]
 minversion = "7.0"

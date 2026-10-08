@@ -108,11 +108,8 @@ pip install adaptive-classifier
 git clone https://github.com/codelion/adaptive-classifier.git
 cd adaptive-classifier
 
-# Install in development mode
-pip install -e .
-
-# Install test dependencies (optional)
-pip install pytest pytest-cov pytest-randomly
+# Install in development mode with test dependencies
+pip install -e ".[test]"
 ```
 
 ---
@@ -314,6 +311,10 @@ ONNX:     2.1ms/query  (4.0x faster) ✓
 ```
 
 > **Note:** ONNX optimization is included by default. For GPU inference, PyTorch is automatically used for best performance.
+
+#### Multilingual models and other runtimes (.NET, JavaScript, ...)
+
+Any multilingual encoder works as the base model, and a saved classifier can be run from C#, Node or the browser through an ONNX runtime. See the [deployment guide](docs/deployment.md) and the dependency-light reference implementation in [`examples/portable_inference.py`](examples/portable_inference.py).
 
 ## Advanced Usage
 

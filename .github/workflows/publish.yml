@@ -21,16 +21,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install setuptools wheel
+          pip install build
       - name: Run tests
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pip install pytest pytest-cov pytest-randomly psutil
-          pip install -e .
+          pip install -e ".[test]"
           pytest tests/
       - name: Build package
         run: |
-          python setup.py sdist bdist_wheel
+          python -m build
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
