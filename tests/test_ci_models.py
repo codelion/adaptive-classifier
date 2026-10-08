@@ -43,3 +43,10 @@ def test_every_model_named_in_tests_is_prefetched():
 def test_prefetch_list_has_no_unused_models():
     unused = _prefetch_models() - _models_used_by_tests()
     assert not unused, f"Remove {sorted(unused)} from scripts/prefetch_test_models.py"
+
+
+def test_tests_use_canonical_model_ids():
+    """Short aliases such as "bert-base-uncased" cannot be prefetched: the Hub's
+    download-token endpoint returns 404 for them."""
+    aliases = {m for m in _models_used_by_tests() if "/" not in m}
+    assert not aliases, f"Use the canonical owner/name id instead of {sorted(aliases)}"

@@ -14,11 +14,13 @@ import time
 from huggingface_hub import snapshot_download
 
 # Keep in sync with the model names used in tests/ (tests/test_ci_models.py
-# fails when a test uses a model that is not listed here).
+# fails when a test uses a model that is not listed here). Use canonical
+# "owner/name" ids: the old short aliases ("bert-base-uncased") make the Hub's
+# download-token endpoint return 404, so they cannot be prefetched.
 MODELS = [
     "prajjwal1/bert-tiny",
-    "bert-base-uncased",
-    "distilbert-base-uncased",
+    "google-bert/bert-base-uncased",
+    "distilbert/distilbert-base-uncased",
     "distilbert/distilbert-base-cased",
     "google-bert/bert-large-cased",
     "answerdotai/ModernBERT-base",
@@ -48,6 +50,12 @@ def main() -> int:
                 print(f"ok    {model}")
                 break
             except Exception as error:  # network, 429, 5xx
+                status = getattr(getattr(error, "response", None), "status_code", None)
+                if status in (401, 403, 404):
+                    # Permanent (missing repo, bad id, no access); retrying only delays the failure.
+                    print(f"fail  {model}: HTTP {status} - {str(error)[:200]}", flush=True)
+                    failed.append(model)
+                    break
                 wait = min(120, 5 * 2 ** attempt)
                 print(f"retry {model} ({attempt}/{ATTEMPTS}): {type(error).__name__}: "
                       f"{str(error)[:200]} - waiting {wait}s", flush=True)

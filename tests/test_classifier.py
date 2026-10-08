@@ -8,7 +8,7 @@ from adaptive_classifier import AdaptiveClassifier
 
 @pytest.fixture
 def base_classifier():
-    return AdaptiveClassifier("bert-base-uncased")
+    return AdaptiveClassifier("google-bert/bert-base-uncased")
 
 @pytest.fixture
 def sample_data():
@@ -206,7 +206,7 @@ def test_num_representative_examples(sample_data):
     config = {
         'num_representative_examples': 2  # Set to keep only 2 example per class
     }
-    classifier = AdaptiveClassifier("bert-base-uncased", config=config)
+    classifier = AdaptiveClassifier("google-bert/bert-base-uncased", config=config)
 
     # Add more examples than num_representative_examples
     texts, labels = sample_data

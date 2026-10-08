@@ -91,7 +91,7 @@ def test_adaptive_classifier_with_many_classes():
     torch.manual_seed(42)
     
     # Create classifier
-    classifier = AdaptiveClassifier('distilbert-base-uncased', device='cpu')
+    classifier = AdaptiveClassifier('distilbert/distilbert-base-uncased', device='cpu')
     
     # Simulate many classes with few examples each
     num_classes = 20
@@ -155,7 +155,7 @@ def test_ewc_loss_computation(simple_model, small_dataset):
 
 def test_progressive_class_addition():
     """Test adding classes progressively (triggers EWC multiple times)."""
-    classifier = AdaptiveClassifier('distilbert-base-uncased', device='cpu')
+    classifier = AdaptiveClassifier('distilbert/distilbert-base-uncased', device='cpu')
     
     # Phase 1: Add initial classes
     phase1_texts = ["Good product", "Bad service", "Average quality"]
