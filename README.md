@@ -318,6 +318,24 @@ Any multilingual encoder works as the base model, and a saved classifier can be 
 
 ## Advanced Usage
 
+### Fixing Mistakes and Knowing When to Abstain
+
+```python
+# Remove a wrongly labelled example, or a whole class
+classifier.remove_examples(["Refund my order"], label="technical")
+classifier.forget("obsolete_class")
+
+# Detect inputs unlike anything the classifier has seen
+classifier.is_ood("completely unrelated text")        # True / False
+classifier.ood_score("completely unrelated text")     # ~1 or below = familiar, higher = further out
+
+# Abstain instead of guessing (an empty list means "don't know")
+classifier.predict(text, abstain_below=0.6)           # low confidence
+classifier.predict(text, abstain_ood=True)            # out of distribution
+```
+
+Out-of-distribution scores compare a text's distance from the nearest class prototype to that class's own spread, so no per-model tuning of absolute distances is needed. The default `ood_threshold` of 1.25 is a starting point; check it on held-out data.
+
 ### Adding New Classes Dynamically
 
 ```python

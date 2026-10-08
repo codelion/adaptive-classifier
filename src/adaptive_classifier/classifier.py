@@ -391,29 +391,169 @@ class AdaptiveClassifier(ModelHubMixin):
             
             logger.debug("Performed strategic training step")
     
-    def predict(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
+    def predict(
+        self,
+        text: str,
+        k: int = 5,
+        abstain_below: Optional[float] = None,
+        abstain_ood: bool = False,
+    ) -> List[Tuple[str, float]]:
         """Predict with dual prediction system - blends strategic and regular predictions.
-        
+
         If no cost function is provided, uses existing prediction logic (zero changes).
         If cost function is provided, blends strategic and regular predictions.
-        
+
         Args:
             text: Input text to classify
             k: Number of top predictions to return
-            
+            abstain_below: If set, return an empty list when the top
+                prediction's confidence is below this value
+            abstain_ood: If True, return an empty list when the text is out of
+                distribution (see `is_ood`). Costs one extra embedding pass.
+
         Returns:
-            List of (label, confidence) tuples
+            List of (label, confidence) tuples. An empty list means the
+            classifier abstained.
         """
         if not text:
             raise ValueError("Empty input text")
-        
+
+        if abstain_ood and self.is_ood(text):
+            return []
+
         # If strategic mode is not enabled, use regular prediction
         if not self.strategic_mode:
-            return self._predict_regular(text, k)
-        
-        # Dual prediction system: blend strategic and regular predictions
-        return self._predict_dual(text, k)
-    
+            predictions = self._predict_regular(text, k)
+        else:
+            # Dual prediction system: blend strategic and regular predictions
+            predictions = self._predict_dual(text, k)
+
+        if abstain_below is not None and (not predictions or predictions[0][1] < abstain_below):
+            return []
+        return predictions
+
+    def ood_score(self, text: str) -> float:
+        """How far `text` sits outside the known classes.
+
+        The score is the distance to the nearest class prototype divided by
+        that class's radius (the distance from its prototype to its farthest
+        training example). Around 1.0 or below means the text looks like
+        something the class has seen; larger means further out. Returns
+        infinity when the classifier has no classes.
+        """
+        if not text:
+            raise ValueError("Empty input text")
+        with torch.no_grad():
+            embedding = self._get_embeddings([text])[0]
+        score, _ = self.memory.ood_score(embedding)
+        return score
+
+    def is_ood(self, text: str, threshold: Optional[float] = None) -> bool:
+        """True when `text` scores above the out-of-distribution threshold.
+
+        Args:
+            text: Input text
+            threshold: Overrides the `ood_threshold` config value (default 1.25)
+        """
+        limit = self.config.ood_threshold if threshold is None else threshold
+        return self.ood_score(text) > limit
+
+    def forget(self, labels: Union[str, List[str]]):
+        """Remove one or more classes entirely.
+
+        The classes disappear from prototypes, examples, label maps, training
+        history and the neural head. The remaining classes keep their learned
+        head weights, and no retraining happens.
+
+        Raises:
+            ValueError: If a label is not a known class
+        """
+        if isinstance(labels, str):
+            labels = [labels]
+        unknown = sorted(set(labels) - set(self.label_to_id))
+        if unknown:
+            raise ValueError(f"Unknown labels: {unknown}")
+        self._drop_classes(set(labels))
+
+    def remove_examples(
+        self,
+        texts: List[str],
+        label: Optional[str] = None,
+        retrain: bool = True,
+    ) -> int:
+        """Remove training examples by exact text, e.g. to fix a bad label.
+
+        Args:
+            texts: Texts of the examples to remove
+            label: Only remove from this class; searches all classes if None
+            retrain: Fine-tune the neural head on the remaining examples.
+                Prototypes are always recomputed. The head is only
+                fine-tuned, not retrained from scratch, so it can retain some
+                influence of the removed text; rebuild the classifier if you
+                need guaranteed erasure.
+
+        Returns:
+            Number of examples removed. A class left with no examples is
+            removed, as with `forget`.
+
+        Note:
+            A classifier loaded from disk holds only a few representative
+            examples per class, not the full set its prototype was built from.
+            Removing from it recomputes the prototype from the examples that
+            are present, which shifts it more than removing from a live
+            classifier would.
+        """
+        if not texts:
+            raise ValueError("Empty input list")
+        if label is not None and label not in self.label_to_id:
+            raise ValueError(f"Unknown label: {label}")
+
+        targets = [label] if label is not None else sorted(self.memory.examples)
+        total = 0
+        emptied = set()
+        for lbl in targets:
+            held = len(self.memory.examples.get(lbl, []))
+            removed = self.memory.remove_examples(lbl, texts)
+            if not removed:
+                continue
+            if held < self.training_history.get(lbl, 0):
+                logger.warning(
+                    f"Class '{lbl}' holds {held} examples but was trained on "
+                    f"{self.training_history[lbl]}; its prototype is now "
+                    "recomputed from the examples that remain."
+                )
+            total += removed
+            self.training_history[lbl] = max(0, self.training_history.get(lbl, 0) - removed)
+            if lbl not in self.memory.prototypes:
+                emptied.add(lbl)
+
+        if emptied:
+            self._drop_classes(emptied)
+        if total:
+            self.memory._rebuild_index()
+            if retrain and self.adaptive_head is not None and self.memory.examples:
+                self._train_adaptive_head()
+        return total
+
+    def _drop_classes(self, drop: Set[str]):
+        """Remove classes from every structure that tracks them."""
+        ordered = sorted(self.label_to_id.items(), key=lambda item: item[1])
+        keep = [(label, idx) for label, idx in ordered if label not in drop]
+
+        for label in drop:
+            self.memory.remove_class(label)
+            self.training_history.pop(label, None)
+
+        self.label_to_id = {label: new for new, (label, _) in enumerate(keep)}
+        self.id_to_label = {new: label for label, new in self.label_to_id.items()}
+
+        if self.adaptive_head is not None:
+            if keep:
+                self.adaptive_head.remove_classes([old for _, old in keep])
+                self.adaptive_head = self.adaptive_head.to(self.device)
+            else:
+                self.adaptive_head = None
+
     def _predict_regular(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
         """Regular prediction logic (original implementation)."""
         # Ensure deterministic behavior
@@ -548,6 +688,7 @@ class AdaptiveClassifier(ModelHubMixin):
             'id_to_label': {str(k): v for k, v in self.id_to_label.items()},
             'train_steps': self.train_steps,
             'training_history': self.training_history,  # Save cumulative training counts
+            'ood_radii': {label: self.memory.class_radius(label) for label in self.memory.prototypes},
             'config': saved_settings,
             'library_name': 'adaptive-classifier'  # Tell HuggingFace Hub this requires the adaptive-classifier library
         }
@@ -905,6 +1046,7 @@ class AdaptiveClassifier(ModelHubMixin):
 
         # Rebuild memory system
         classifier.memory._restore_from_save()
+        classifier.memory.saved_radii = dict(config_dict.get('ood_radii', {}))
 
         # Restore adaptive head if it exists
         adaptive_head_params = {
@@ -1463,16 +1605,18 @@ This model:
         return all_predictions
 
     def clear_memory(self, labels: Optional[List[str]] = None):
-        """Clear memory for specified labels or all if none specified."""
+        """Clear memory for specified labels or all if none specified.
+
+        With labels, this is `forget`: the classes are removed everywhere, so
+        they no longer show up in predictions. Labels that are not known
+        classes are ignored.
+        """
         if labels is None:
             self.memory.clear()
-        else:
-            for label in labels:
-                if label in self.memory.examples:
-                    del self.memory.examples[label]
-                if label in self.memory.prototypes:
-                    del self.memory.prototypes[label]
-            self.memory._rebuild_index()
+            return
+        known = [label for label in labels if label in self.label_to_id]
+        if known:
+            self.forget(known)
 
     def merge_classifiers(self, other: 'AdaptiveClassifier') -> 'AdaptiveClassifier':
         """Merge another classifier into this one."""

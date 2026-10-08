@@ -29,6 +29,9 @@ class PrototypeMemory:
         self.examples = defaultdict(list)  # label -> List[Example]
         self.prototypes = {}  # label -> tensor
         self.strategic_prototypes = {}  # label -> strategic prototype tensor
+        # Class spread recorded when a classifier was saved. A reloaded memory
+        # keeps only a few representative examples, which understate the spread.
+        self.saved_radii = {}  # label -> float
         
         # Initialize FAISS index for fast similarity search
         self.index = faiss.IndexFlatL2(embedding_dim)
@@ -235,10 +238,66 @@ class PrototypeMemory:
             'updates_since_rebuild': self.updates_since_rebuild
         }
     
+    def remove_class(self, label: str):
+        """Drop a class and everything stored for it."""
+        self.examples.pop(label, None)
+        self.prototypes.pop(label, None)
+        self.strategic_prototypes.pop(label, None)
+        self.saved_radii.pop(label, None)
+        self._rebuild_index()
+
+    def remove_examples(self, label: str, texts) -> int:
+        """Remove examples of `label` whose text is in `texts`.
+
+        The prototype is recomputed from what remains; a class left with no
+        examples is removed. Returns the number of examples removed.
+        """
+        wanted = set(texts)
+        before = self.examples.get(label, [])
+        kept = [ex for ex in before if ex.text not in wanted]
+        removed = len(before) - len(kept)
+        if removed == 0:
+            return 0
+        if not kept:
+            self.remove_class(label)
+            return removed
+        self.examples[label] = kept
+        self.prototypes[label] = torch.mean(torch.stack([ex.embedding for ex in kept]), dim=0)
+        self.strategic_prototypes.pop(label, None)
+        # The saved spread described the old membership.
+        self.saved_radii.pop(label, None)
+        self._rebuild_index()
+        return removed
+
+    def class_radius(self, label: str) -> float:
+        """Distance from the prototype to the farthest known example."""
+        radius = self.saved_radii.get(label, 0.0)
+        examples = self.examples.get(label)
+        if examples and label in self.prototypes:
+            embeddings = torch.stack([ex.embedding for ex in examples])
+            distances = torch.norm(embeddings - self.prototypes[label], dim=1)
+            radius = max(radius, float(distances.max()))
+        return radius
+
+    def ood_score(self, query_embedding: torch.Tensor):
+        """Return (score, label): the smallest distance-to-radius ratio over classes.
+
+        1.0 means the query is exactly as far from the prototype as the most
+        remote training example. Returns (inf, None) when the memory is empty.
+        """
+        best_score, best_label = float('inf'), None
+        for label, prototype in self.prototypes.items():
+            radius = max(self.class_radius(label), self.config.ood_min_radius)
+            score = float(torch.norm(query_embedding - prototype)) / radius
+            if score < best_score:
+                best_score, best_label = score, label
+        return best_score, best_label
+
     def clear(self):
         """Clear all memory."""
         self.examples.clear()
         self.prototypes.clear()
+        self.saved_radii.clear()
         self.index = faiss.IndexFlatL2(self.embedding_dim)
         self.label_to_index.clear()
         self.index_to_label.clear()

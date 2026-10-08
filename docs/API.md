@@ -128,7 +128,46 @@ def clear_memory(labels: Optional[List[str]] = None)
 Clear stored examples and prototypes.
 
 Parameters:
-- `labels`: Optional list of labels to clear. If None, clears all memory
+- `labels`: Optional list of labels to clear. If given, this is the same as `forget(labels)` (unknown labels are ignored). If None, clears all stored examples and prototypes
+
+#### forget
+
+```python
+def forget(labels: Union[str, List[str]])
+```
+
+Remove whole classes: their examples, prototype, label ids, training history and neural-head output. The remaining classes keep their learned head weights and no retraining happens. Raises `ValueError` for an unknown label.
+
+#### remove_examples
+
+```python
+def remove_examples(texts: List[str], label: Optional[str] = None, retrain: bool = True) -> int
+```
+
+Remove training examples by exact text, for example to fix a wrong label. Prototypes are recomputed; a class left with no examples is removed. Returns the number of examples removed.
+
+Parameters:
+- `texts`: Texts to remove
+- `label`: Restrict removal to one class; searches all classes if None
+- `retrain`: Fine-tune the neural head on the remaining examples. This is fine-tuning, not retraining from scratch, so the head may keep some influence of the removed text
+
+A classifier loaded from disk keeps only a few representative examples per class, so removing from it recomputes the prototype from those and shifts it more than removing from a live classifier (a warning is logged).
+
+#### ood_score
+
+```python
+def ood_score(text: str) -> float
+```
+
+How far `text` is from the known classes: the distance to the nearest class prototype divided by that class's radius (the distance from its prototype to its farthest training example). Around 1 or below looks like known data; larger is further out. Returns `inf` for a classifier with no classes. Class radii are saved with the model.
+
+#### is_ood
+
+```python
+def is_ood(text: str, threshold: Optional[float] = None) -> bool
+```
+
+True when `ood_score(text)` exceeds `threshold`, which defaults to the `ood_threshold` config value (1.25). `ood_min_radius` (default 0.05) sets a floor on class radii so single-example classes do not divide by zero. The right threshold depends on your encoder and data, so check it on held-out examples.
 
 #### merge_classifiers
 

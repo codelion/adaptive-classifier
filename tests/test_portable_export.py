@@ -19,28 +19,10 @@ import torch
 
 from adaptive_classifier import AdaptiveClassifier
 
-WORDS = ("great terrible okay product service love hate awful fine good bad "
-         "slow fast cheap broke works the a is it very").split()
 TEXTS = ["great product love it", "works very good fast", "terrible awful service",
          "hate it broke bad", "okay fine the product", "it is okay fine"] * 3
 LABELS = ["pos", "pos", "neg", "neg", "neu", "neu"] * 3
 QUERIES = ["great fast product", "awful slow broke", "okay it is fine", "love the service"]
-
-
-@pytest.fixture(scope="module")
-def base_model(tmp_path_factory):
-    from transformers import BertConfig, BertModel, BertTokenizerFast
-
-    path = tmp_path_factory.mktemp("tiny_bert")
-    vocab = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"] + WORDS
-    (path / "vocab.txt").write_text("\n".join(vocab), encoding="utf-8")
-    torch.manual_seed(0)
-    BertModel(BertConfig(
-        vocab_size=len(vocab), hidden_size=32, num_hidden_layers=2,
-        num_attention_heads=2, intermediate_size=64,
-    )).save_pretrained(path)
-    BertTokenizerFast(str(path / "vocab.txt"), do_lower_case=True).save_pretrained(path)
-    return str(path)
 
 
 def _trained(base_model, **config):

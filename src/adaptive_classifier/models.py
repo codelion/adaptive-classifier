@@ -97,6 +97,22 @@ class AdaptiveHead(nn.Module):
                 
             self.model[-1] = new_layer
 
+    def remove_classes(self, keep_indices: list):
+        """Keep only the given output rows, in the given order.
+
+        The retained classes keep their learned weights, so removing a class
+        does not disturb what the head knows about the others.
+        """
+        if not keep_indices:
+            raise ValueError("Cannot remove every class from the head")
+        layer = self.model[-1]
+        new_layer = nn.Linear(layer.in_features, len(keep_indices))
+        with torch.no_grad():
+            index = torch.tensor(keep_indices, dtype=torch.long, device=layer.weight.device)
+            new_layer.weight.copy_(layer.weight[index])
+            new_layer.bias.copy_(layer.bias[index])
+        self.model[-1] = new_layer.to(layer.weight.device)
+
 class ModelConfig:
     """Configuration for the adaptive classifier."""
     
@@ -151,6 +167,15 @@ class ModelConfig:
         self.new_class_prototype_weight = self.config.get('new_class_prototype_weight', 0.3)
         self.new_class_neural_weight = self.config.get('new_class_neural_weight', 0.7)
         self.min_confidence = self.config.get('min_confidence', 0.1)
+
+        # Out-of-distribution detection. A query is scored by how far it sits
+        # from its nearest class prototype relative to that class's own spread
+        # (the farthest training example from the prototype). A score above
+        # `ood_threshold` means "further out than anything this class has seen
+        # by that factor". `ood_min_radius` stops one-example classes from
+        # having a zero radius.
+        self.ood_threshold = self.config.get('ood_threshold', 1.25)
+        self.ood_min_radius = self.config.get('ood_min_radius', 0.05)
         
         # Device settings
         self.device_map = self.config.get('device_map', 'auto')
@@ -202,6 +227,8 @@ class ModelConfig:
             'new_class_prototype_weight': self.new_class_prototype_weight,
             'new_class_neural_weight': self.new_class_neural_weight,
             'min_confidence': self.min_confidence,
+            'ood_threshold': self.ood_threshold,
+            'ood_min_radius': self.ood_min_radius,
             'device_map': self.device_map,
             'quantization': self.quantization,
             'gradient_checkpointing': self.gradient_checkpointing,
