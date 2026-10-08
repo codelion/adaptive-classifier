@@ -5,7 +5,12 @@ import numpy as np
 from transformers import AutoModel, AutoTokenizer
 from typing import List, Dict, Optional, Tuple, Any, Set, Union
 import logging
+import asyncio
 import copy
+import functools
+import math
+import numbers
+import threading
 from pathlib import Path
 from safetensors.torch import save_file, load_file
 import json
@@ -17,6 +22,7 @@ import shutil
 from .models import Example, AdaptiveHead, ModelConfig
 from .memory import PrototypeMemory
 from .ewc import EWC
+from . import calibration as calibration_math
 from .strategic import (
     StrategicCostFunction, CostFunctionFactory, StrategicOptimizer, StrategicEvaluator
 )
@@ -24,9 +30,53 @@ from .strategic import (
 
 logger = logging.getLogger(__name__)
 
+_LOCK_CREATION = threading.Lock()
+
+# Files that make a directory loadable by AutoTokenizer.
+_TOKENIZER_FILES = (
+    "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
+    "vocab.txt", "vocab.json", "merges.txt", "added_tokens.json",
+    "spiece.model", "sentencepiece.bpe.model",
+)
+
+
+def _has_local_tokenizer(directory: Path) -> bool:
+    return (directory / "tokenizer.json").exists() or (directory / "tokenizer_config.json").exists()
+
+
+def _synchronized(method):
+    """Run a method while holding the instance lock.
+
+    Predictions read several structures (label maps, prototypes, the neural
+    head) that `add_examples`, `forget` and friends rewrite together; a reader
+    that sees them half-updated fails with errors like "selected index k out of
+    range". One reentrant lock per classifier makes every public operation
+    atomic, so a classifier can be shared between threads (for example behind a
+    web server). Throughput scales with processes, not threads.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class AdaptiveClassifier(ModelHubMixin):
     """A flexible classifier that can adapt to new classes and examples."""
-    
+
+    # Set by `calibrate`. A class-level default keeps instances built without
+    # __init__ (the loaders do that) working.
+    calibration: Optional[Dict[str, Any]] = None
+
+    @property
+    def _lock(self) -> "threading.RLock":
+        # Created lazily because the loaders build instances without __init__.
+        lock = self.__dict__.get('_instance_lock')
+        if lock is None:
+            with _LOCK_CREATION:
+                lock = self.__dict__.setdefault('_instance_lock', threading.RLock())
+        return lock
+
     def __init__(
         self,
         model_name: str,
@@ -131,12 +181,37 @@ class AdaptiveClassifier(ModelHubMixin):
             logger.warning(f"Invalid use_onnx value: {use_onnx}. Using auto-detection.")
             return self.device == "cpu"
 
+    @staticmethod
+    def _validate_training_inputs(texts: List[str], labels: List[str]):
+        """Reject inputs that would corrupt the classifier or fail obscurely later."""
+        bad_text = next((t for t in texts if not isinstance(t, str)), None)
+        if bad_text is not None or any(t is None for t in texts):
+            raise ValueError(
+                f"texts must all be strings; got {type(bad_text).__name__}"
+            )
+        bad_label = next((l for l in labels if not isinstance(l, str)), None)
+        if bad_label is not None or any(l is None for l in labels):
+            # Saving writes labels into JSON keys and tensor names, which turns
+            # other types into strings: a saved integer-labelled classifier
+            # reloads with duplicated, inconsistent classes.
+            raise ValueError(
+                f"labels must be strings; got {type(bad_label).__name__}. "
+                "Convert with str(label)."
+            )
+
+    @staticmethod
+    def _validate_k(k: int):
+        if not isinstance(k, numbers.Integral) or isinstance(k, bool) or k < 0:
+            raise ValueError(f"k must be a non-negative integer; got {k!r}")
+
+    @_synchronized
     def add_examples(self, texts: List[str], labels: List[str]):
         """Add new examples with special handling for new classes."""
         if not texts or not labels:
             raise ValueError("Empty input lists")
         if len(texts) != len(labels):
             raise ValueError("Mismatched text and label lists")
+        self._validate_training_inputs(texts, labels)
 
         # Check if classifier has any existing classes (before updating mappings)
         has_existing_classes = len(self.label_to_id) > 0
@@ -144,6 +219,10 @@ class AdaptiveClassifier(ModelHubMixin):
         # Check for new classes
         new_classes = set(labels) - set(self.label_to_id.keys())
         is_adding_new_classes = len(new_classes) > 0
+
+        if is_adding_new_classes and self.calibration:
+            logger.warning("Discarding confidence calibration: the set of classes changed")
+            self.calibration = None
 
         # Update label mappings - sort new classes alphabetically for consistent IDs
         for label in sorted(new_classes):
@@ -391,29 +470,446 @@ class AdaptiveClassifier(ModelHubMixin):
             
             logger.debug("Performed strategic training step")
     
-    def predict(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
+    @_synchronized
+    def predict(
+        self,
+        text: str,
+        k: int = 5,
+        abstain_below: Optional[float] = None,
+        abstain_ood: bool = False,
+    ) -> List[Tuple[str, float]]:
         """Predict with dual prediction system - blends strategic and regular predictions.
-        
+
         If no cost function is provided, uses existing prediction logic (zero changes).
         If cost function is provided, blends strategic and regular predictions.
-        
+
         Args:
             text: Input text to classify
             k: Number of top predictions to return
-            
+            abstain_below: If set, return an empty list when the top
+                prediction's confidence is below this value
+            abstain_ood: If True, return an empty list when the text is out of
+                distribution (see `is_ood`). Costs one extra embedding pass.
+
         Returns:
-            List of (label, confidence) tuples
+            List of (label, confidence) tuples. An empty list means the
+            classifier abstained.
         """
         if not text:
             raise ValueError("Empty input text")
-        
+        self._validate_k(k)
+
+        if abstain_ood and self.is_ood(text):
+            return []
+
         # If strategic mode is not enabled, use regular prediction
+        # Calibration rescales the whole distribution, so it needs every class.
+        internal_k = len(self.id_to_label) if self.calibration else k
         if not self.strategic_mode:
-            return self._predict_regular(text, k)
-        
-        # Dual prediction system: blend strategic and regular predictions
-        return self._predict_dual(text, k)
-    
+            predictions = self._predict_regular(text, internal_k)
+        else:
+            # Dual prediction system: blend strategic and regular predictions
+            predictions = self._predict_dual(text, internal_k)
+        if self.calibration:
+            predictions = self._calibrate(predictions)[:k]
+
+        if abstain_below is not None and (not predictions or predictions[0][1] < abstain_below):
+            return []
+        return predictions
+
+    @_synchronized
+    def ood_score(self, text: str) -> float:
+        """How far `text` sits outside the known classes.
+
+        The score is the distance to the nearest class prototype divided by
+        that class's radius (the distance from its prototype to its farthest
+        training example). Around 1.0 or below means the text looks like
+        something the class has seen; larger means further out. Returns
+        infinity when the classifier has no classes.
+        """
+        if not text:
+            raise ValueError("Empty input text")
+        with torch.no_grad():
+            embedding = self._get_embeddings([text])[0]
+        score, _ = self.memory.ood_score(embedding)
+        return score
+
+    @_synchronized
+    def is_ood(self, text: str, threshold: Optional[float] = None) -> bool:
+        """True when `text` scores above the out-of-distribution threshold.
+
+        Args:
+            text: Input text
+            threshold: Overrides the `ood_threshold` config value (default 1.25)
+        """
+        limit = self.config.ood_threshold if threshold is None else threshold
+        return self.ood_score(text) > limit
+
+    # --- async API ---------------------------------------------------------------------
+
+    async def apredict(self, text: str, k: int = 5, **kwargs) -> List[Tuple[str, float]]:
+        """`predict` without blocking the event loop (runs in a worker thread)."""
+        return await asyncio.to_thread(self.predict, text, k, **kwargs)
+
+    async def apredict_batch(self, texts: List[str], k: int = 5, **kwargs) -> List[List[Tuple[str, float]]]:
+        """`predict_batch` without blocking the event loop."""
+        return await asyncio.to_thread(self.predict_batch, texts, k, **kwargs)
+
+    async def aadd_examples(self, texts: List[str], labels: List[str]):
+        """`add_examples` without blocking the event loop."""
+        return await asyncio.to_thread(self.add_examples, texts, labels)
+
+    # --- calibration ---------------------------------------------------------------
+
+    def _calibrate(self, predictions: List[Tuple[str, float]]) -> List[Tuple[str, float]]:
+        """Apply the fitted temperature to a full (all-class) prediction list."""
+        if not self.calibration or not predictions:
+            return predictions
+        probs = calibration_math.apply_temperature(
+            np.array([score for _, score in predictions]), self.calibration['temperature']
+        )
+        calibrated = [(label, float(p)) for (label, _), p in zip(predictions, probs)]
+        return sorted(calibrated, key=lambda item: item[1], reverse=True)
+
+    def _distribution_matrix(self, texts: List[str]):
+        """Uncalibrated scores for each text as a matrix with columns in label-id order."""
+        saved, self.calibration = self.calibration, None
+        try:
+            n = len(self.id_to_label)
+            matrix = np.zeros((len(texts), n))
+            for row, text in enumerate(texts):
+                for label, score in self.predict(text, k=n):
+                    matrix[row, self.label_to_id[label]] = score
+        finally:
+            self.calibration = saved
+        return matrix
+
+    def _calibration_inputs(self, texts: List[str], labels: List[str]):
+        if not texts:
+            raise ValueError("Empty input lists")
+        if len(texts) != len(labels):
+            raise ValueError("Mismatched text and label lists")
+        self._validate_training_inputs(texts, labels)
+        unknown = sorted(set(labels) - set(self.label_to_id))
+        if unknown:
+            raise ValueError(f"Unknown labels: {unknown}")
+        return np.array([self.label_to_id[label] for label in labels])
+
+    @_synchronized
+    def calibrate(self, texts: List[str], labels: List[str]) -> Dict[str, float]:
+        """Fit confidence calibration on labelled examples the model was *not* trained on.
+
+        Learns one temperature so that confidences match how often the model is
+        actually right (a score of 0.9 should mean about 90%), and records the
+        scores needed by `predict_set`. After this, `predict`, `predict_batch`
+        and `abstain_below` use the calibrated probabilities; the predicted
+        class never changes. Calibrating on data the model was trained on
+        makes it look better than it is, so hold some data out.
+
+        Re-run it after substantial additions of new data. Adding a new class,
+        or forgetting one, discards the calibration because the class set it
+        described no longer exists.
+
+        Returns:
+            The fitted `temperature` (above 1: the model was over-confident),
+            and `ece` / `nll` before and after (lower is better).
+        """
+        targets = self._calibration_inputs(texts, labels)
+        if len(texts) < 2 or len(self.label_to_id) < 2:
+            raise ValueError("Calibration needs at least 2 examples and 2 classes")
+        if len(texts) < 20:
+            logger.warning(f"Calibrating on only {len(texts)} examples; the estimate will be noisy")
+
+        probs = self._distribution_matrix(texts)
+        temperature = calibration_math.fit_temperature(probs, targets)
+        calibrated = calibration_math.apply_temperature(probs, temperature)
+        scores = calibration_math.nonconformity_scores(calibrated, targets)
+        self.calibration = {
+            'temperature': temperature,
+            'scores': sorted(float(score) for score in scores),
+            'n': int(len(targets)),
+        }
+        before = calibration_math.summarise(probs, targets)
+        after = calibration_math.summarise(calibrated, targets)
+        return {
+            'temperature': temperature,
+            'n': before['n'],
+            'ece_before': before['ece'], 'ece_after': after['ece'],
+            'nll_before': before['nll'], 'nll_after': after['nll'],
+            'accuracy': before['accuracy'],
+        }
+
+    @_synchronized
+    def calibration_report(self, texts: List[str], labels: List[str],
+                           calibrated: bool = True, bins: int = 10) -> Dict[str, float]:
+        """Accuracy, mean confidence, expected calibration error (ECE) and NLL on labelled data.
+
+        Use it on a *separate* test set to check that calibration generalises.
+        With `calibrated=False` the fitted temperature is ignored.
+        """
+        targets = self._calibration_inputs(texts, labels)
+        probs = self._distribution_matrix(texts)
+        if calibrated and self.calibration:
+            probs = calibration_math.apply_temperature(probs, self.calibration['temperature'])
+        return calibration_math.summarise(probs, targets, bins)
+
+    @_synchronized
+    def predict_set(self, text: str, alpha: float = 0.1) -> List[Tuple[str, float]]:
+        """Labels that contain the true one with probability at least `1 - alpha`.
+
+        A split-conformal prediction set: when the model is sure the set has
+        one label, and it grows with uncertainty. The guarantee holds for
+        inputs that look like the calibration data (exchangeable with it) and
+        is an average over inputs, not a promise for each one. The top label is
+        always included, so the set is never empty (which can only make
+        coverage higher). Requires `calibrate` first.
+
+        Returns:
+            (label, calibrated probability) pairs, most likely first.
+        """
+        if not self.calibration:
+            raise ValueError("predict_set needs calibration; call calibrate(texts, labels) first")
+        if not text:
+            raise ValueError("Empty input text")
+        threshold = calibration_math.conformal_threshold(self.calibration['scores'], alpha)
+        full = self.predict(text, k=len(self.id_to_label))
+        chosen = [(label, p) for label, p in full if 1.0 - p <= threshold]
+        return chosen or full[:1]
+
+    # --- active learning and drift -----------------------------------------------------
+
+    _SUGGEST_STRATEGIES = ("margin", "entropy", "least_confidence", "ood")
+
+    @_synchronized
+    def suggest_labels(
+        self,
+        texts: List[str],
+        n: int = 10,
+        strategy: str = "margin",
+        diverse: bool = False,
+    ) -> List[Tuple[int, float]]:
+        """Pick the unlabeled texts that would teach the model the most if labelled.
+
+        Strategies (higher score = more worth labelling):
+
+        * ``"margin"``: how close the top two classes are (``1 - (p1 - p2)``).
+          A good default: it finds texts sitting on a decision boundary.
+        * ``"entropy"``: uncertainty spread over all classes, scaled to 0-1.
+        * ``"least_confidence"``: ``1 - p1``.
+        * ``"ood"``: how far the text is from every known class (see
+          `ood_score`). Use it to discover classes the model has never seen.
+
+        With ``diverse=True`` the picks are spread out: after each choice,
+        texts similar to it are discounted, so you do not label ten near
+        duplicates of the same confusing case.
+
+        Probabilities are calibrated if `calibrate` was run.
+
+        Returns:
+            Up to `n` ``(index into texts, score)`` pairs, best first.
+        """
+        if not texts:
+            raise ValueError("Empty input list")
+        if strategy not in self._SUGGEST_STRATEGIES:
+            raise ValueError(f"strategy must be one of {self._SUGGEST_STRATEGIES}; got {strategy!r}")
+        if not isinstance(n, numbers.Integral) or isinstance(n, bool) or n < 1:
+            raise ValueError(f"n must be a positive integer; got {n!r}")
+        if not self.label_to_id:
+            raise ValueError("suggest_labels needs a trained classifier")
+        if any(not isinstance(t, str) or not t for t in texts):
+            raise ValueError("texts must all be non-empty strings")
+
+        scores = self._informativeness(texts, strategy)
+        count = min(int(n), len(texts))
+
+        if not diverse:
+            order = sorted(range(len(texts)), key=lambda i: scores[i], reverse=True)
+            return [(i, float(scores[i])) for i in order[:count]]
+
+        embeddings = torch.stack(self._get_embeddings(texts))
+        chosen: List[int] = []
+        discount = np.ones(len(texts))
+        for _ in range(count):
+            adjusted = np.where(np.isin(np.arange(len(texts)), chosen), -np.inf, scores * discount)
+            best = int(np.argmax(adjusted))
+            chosen.append(best)
+            # Texts similar to the one just chosen are worth less from now on.
+            similarity = (embeddings @ embeddings[best]).clamp(min=0).numpy()
+            discount = np.minimum(discount, 1.0 - similarity)
+        return [(i, float(scores[i])) for i in chosen]
+
+    def _informativeness(self, texts: List[str], strategy: str) -> np.ndarray:
+        if strategy == "ood":
+            return np.array(self._ood_scores(texts))
+        classes = len(self.id_to_label)
+        batches = self.predict_batch(texts, k=classes)
+        scores = np.zeros(len(texts))
+        for row, preds in enumerate(batches):
+            probs = np.array(sorted((p for _, p in preds), reverse=True))
+            if probs.size == 0:
+                continue
+            if strategy == "least_confidence":
+                scores[row] = 1.0 - probs[0]
+            elif strategy == "margin":
+                scores[row] = 1.0 - (probs[0] - (probs[1] if probs.size > 1 else 0.0))
+            else:                                                    # entropy
+                nonzero = probs[probs > 0]
+                entropy = float(-(nonzero * np.log(nonzero)).sum())
+                scores[row] = entropy / math.log(classes) if classes > 1 else 0.0
+        return scores
+
+    def _ood_scores(self, texts: List[str]) -> List[float]:
+        with torch.no_grad():
+            embeddings = self._get_embeddings(texts)
+        return [self.memory.ood_score(embedding)[0] for embedding in embeddings]
+
+    @_synchronized
+    def drift_report(
+        self,
+        texts: List[str],
+        expected_ood_rate: float = 0.05,
+        alpha: float = 0.01,
+        threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Has incoming data moved away from what the classifier knows?
+
+        Scores each text with `ood_score` and tests whether the share of
+        out-of-distribution texts is larger than `expected_ood_rate` (what you
+        see on healthy traffic; 5% by default) with a one-sided binomial test.
+        Run it on a recent window of production inputs. A single window of a
+        few dozen texts cannot detect small shifts, and repeated checks need a
+        stricter `alpha`.
+
+        Returns:
+            ``n``, ``ood_rate``, ``mean_ood_score``, ``p_value`` and
+            ``drifted`` (True when ``p_value < alpha``).
+        """
+        if not texts:
+            raise ValueError("Empty input list")
+        if not self.label_to_id:
+            raise ValueError("drift_report needs a trained classifier")
+        if not 0.0 <= expected_ood_rate < 1.0:
+            raise ValueError(f"expected_ood_rate must be in [0, 1); got {expected_ood_rate}")
+        if not 0.0 < alpha < 1.0:
+            raise ValueError(f"alpha must be between 0 and 1; got {alpha}")
+        if any(not isinstance(t, str) or not t for t in texts):
+            raise ValueError("texts must all be non-empty strings")
+
+        from scipy.stats import binomtest
+
+        limit = self.config.ood_threshold if threshold is None else threshold
+        scores = np.array(self._ood_scores(texts))
+        flagged = int((scores > limit).sum())
+        p_value = float(binomtest(flagged, len(texts), expected_ood_rate, alternative="greater").pvalue)
+        return {
+            'n': len(texts),
+            'ood_rate': flagged / len(texts),
+            'mean_ood_score': float(scores.mean()),
+            'p_value': p_value,
+            'drifted': p_value < alpha,
+        }
+
+    @_synchronized
+    def forget(self, labels: Union[str, List[str]]):
+        """Remove one or more classes entirely.
+
+        The classes disappear from prototypes, examples, label maps, training
+        history and the neural head. The remaining classes keep their learned
+        head weights, and no retraining happens.
+
+        Raises:
+            ValueError: If a label is not a known class
+        """
+        if isinstance(labels, str):
+            labels = [labels]
+        unknown = sorted(set(labels) - set(self.label_to_id))
+        if unknown:
+            raise ValueError(f"Unknown labels: {unknown}")
+        self._drop_classes(set(labels))
+
+    @_synchronized
+    def remove_examples(
+        self,
+        texts: List[str],
+        label: Optional[str] = None,
+        retrain: bool = True,
+    ) -> int:
+        """Remove training examples by exact text, e.g. to fix a bad label.
+
+        Args:
+            texts: Texts of the examples to remove
+            label: Only remove from this class; searches all classes if None
+            retrain: Fine-tune the neural head on the remaining examples.
+                Prototypes are always recomputed. The head is only
+                fine-tuned, not retrained from scratch, so it can retain some
+                influence of the removed text; rebuild the classifier if you
+                need guaranteed erasure.
+
+        Returns:
+            Number of examples removed. A class left with no examples is
+            removed, as with `forget`.
+
+        Note:
+            A classifier loaded from disk holds only a few representative
+            examples per class, not the full set its prototype was built from.
+            Removing from it recomputes the prototype from the examples that
+            are present, which shifts it more than removing from a live
+            classifier would.
+        """
+        if not texts:
+            raise ValueError("Empty input list")
+        if label is not None and label not in self.label_to_id:
+            raise ValueError(f"Unknown label: {label}")
+
+        targets = [label] if label is not None else sorted(self.memory.examples)
+        total = 0
+        emptied = set()
+        for lbl in targets:
+            held = len(self.memory.examples.get(lbl, []))
+            removed = self.memory.remove_examples(lbl, texts)
+            if not removed:
+                continue
+            if held < self.training_history.get(lbl, 0):
+                logger.warning(
+                    f"Class '{lbl}' holds {held} examples but was trained on "
+                    f"{self.training_history[lbl]}; its prototype is now "
+                    "recomputed from the examples that remain."
+                )
+            total += removed
+            self.training_history[lbl] = max(0, self.training_history.get(lbl, 0) - removed)
+            if lbl not in self.memory.prototypes:
+                emptied.add(lbl)
+
+        if emptied:
+            self._drop_classes(emptied)
+        if total:
+            self.memory._rebuild_index()
+            if retrain and self.adaptive_head is not None and self.memory.examples:
+                self._train_adaptive_head()
+        return total
+
+    def _drop_classes(self, drop: Set[str]):
+        """Remove classes from every structure that tracks them."""
+        ordered = sorted(self.label_to_id.items(), key=lambda item: item[1])
+        keep = [(label, idx) for label, idx in ordered if label not in drop]
+        if self.calibration:
+            logger.warning("Discarding confidence calibration: the set of classes changed")
+            self.calibration = None
+
+        for label in drop:
+            self.memory.remove_class(label)
+            self.training_history.pop(label, None)
+
+        self.label_to_id = {label: new for new, (label, _) in enumerate(keep)}
+        self.id_to_label = {new: label for label, new in self.label_to_id.items()}
+
+        if self.adaptive_head is not None:
+            if keep:
+                self.adaptive_head.remove_classes([old for _, old in keep])
+                self.adaptive_head = self.adaptive_head.to(self.device)
+            else:
+                self.adaptive_head = None
+
     def _predict_regular(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
         """Regular prediction logic (original implementation)."""
         # Ensure deterministic behavior
@@ -511,6 +1007,7 @@ class AdaptiveClassifier(ModelHubMixin):
         
         return blended_predictions[:k]
     
+    @_synchronized
     def _save_pretrained(
         self,
         save_directory: Union[str, Path],
@@ -534,6 +1031,12 @@ class AdaptiveClassifier(ModelHubMixin):
         save_directory = Path(save_directory)
         os.makedirs(save_directory, exist_ok=True)
 
+        # 'auto' is resolved against the base model at run time, so persist the
+        # outcome. Other runtimes (ONNX in .NET/JS, ...) cannot repeat that
+        # lookup, and a reload should not depend on the Hub being reachable.
+        saved_settings = self.config.to_dict()
+        saved_settings['pooling'] = self._resolve_pooling()
+
         # Save configuration and metadata
         config_dict = {
             'model_name': self.model.config._name_or_path,
@@ -542,7 +1045,9 @@ class AdaptiveClassifier(ModelHubMixin):
             'id_to_label': {str(k): v for k, v in self.id_to_label.items()},
             'train_steps': self.train_steps,
             'training_history': self.training_history,  # Save cumulative training counts
-            'config': self.config.to_dict(),
+            'ood_radii': {label: self.memory.class_radius(label) for label in self.memory.prototypes},
+            'calibration': self.calibration,
+            'config': saved_settings,
             'library_name': 'adaptive-classifier'  # Tell HuggingFace Hub this requires the adaptive-classifier library
         }
 
@@ -579,6 +1084,13 @@ class AdaptiveClassifier(ModelHubMixin):
             json.dump(saved_examples, f, indent=2, sort_keys=True)
 
         save_file(tensor_dict, tensors_file)
+
+        # Ship the tokenizer so the directory is self-contained for runtimes
+        # that cannot call AutoTokenizer (tokenizer.json is the portable form).
+        try:
+            self.tokenizer.save_pretrained(save_directory)
+        except Exception as e:
+            logger.warning(f"Could not save tokenizer files: {e}")
 
         # Generate model card if it doesn't exist
         model_card_path = save_directory / "README.md"
@@ -669,6 +1181,11 @@ class AdaptiveClassifier(ModelHubMixin):
        
         # Check if model_id is a local directory
         model_path = Path(model_id)
+        if model_path.is_dir() and not (model_path / "config.json").exists():
+            raise FileNotFoundError(
+                f"{model_id} is a directory but not a saved AdaptiveClassifier: "
+                "config.json is missing"
+            )
         try:
             if model_path.is_dir() and (model_path / "config.json").exists():
                 # Local directory with required files
@@ -713,6 +1230,24 @@ class AdaptiveClassifier(ModelHubMixin):
                     token=token,
                     local_files_only=local_files_only,
                 )
+
+                # Tokenizer files (written by save() since 0.3.0), so loading does not
+                # depend on the base model's repository. Older repos do not have them.
+                for tokenizer_file in _TOKENIZER_FILES:
+                    try:
+                        hf_hub_download(
+                            repo_id=model_id,
+                            filename=tokenizer_file,
+                            revision=revision,
+                            cache_dir=cache_dir,
+                            force_download=force_download,
+                            proxies=proxies,
+                            resume_download=resume_download,
+                            token=token,
+                            local_files_only=local_files_only,
+                        )
+                    except Exception:
+                        pass
 
                 # Try to download ONNX files if they exist
                 try:
@@ -763,6 +1298,24 @@ class AdaptiveClassifier(ModelHubMixin):
         saved_config = config_dict.get('config')
         if isinstance(saved_config, dict) and 'pooling' not in saved_config:
             config_dict['config'] = {**saved_config, 'pooling': 'cls'}
+
+        # Likewise, classifiers saved before 0.3.0 were built (head included)
+        # with the legacy prototype scoring and carry explicit new-class weights
+        # in their stored config. Keep that scoring so their predictions do not
+        # change on upgrade; retrain, or set `prototype_temperature`, to adopt
+        # the new behaviour.
+        saved_config = config_dict.get('config')
+        if isinstance(saved_config, dict) and 'prototype_temperature' not in saved_config:
+            # Saves from before 0.2.0 do not store the new-class weights either, and
+            # the fixed 0.3 / 0.7 split was the behaviour then. Without this they would
+            # pick up the new default (a ramp) and score classes with few examples
+            # differently. Saves that did store them keep their own values.
+            config_dict['config'] = {
+                'new_class_prototype_weight': 0.3,
+                'new_class_neural_weight': 0.7,
+                **saved_config,
+                'prototype_temperature': None,
+            }
 
         # Load examples
         with open(model_path / "examples.json", "r", encoding="utf-8") as f:
@@ -824,7 +1377,8 @@ class AdaptiveClassifier(ModelHubMixin):
                 file_name=onnx_file,
                 trust_remote_code=trust_remote_code
             )
-            classifier.tokenizer = AutoTokenizer.from_pretrained(config_dict['model_name'], trust_remote_code=trust_remote_code)
+            tokenizer_source = str(model_path) if _has_local_tokenizer(model_path) else config_dict['model_name']
+            classifier.tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=trust_remote_code)
 
             # Initialize memory and other components
             classifier.embedding_dim = classifier.model.config.hidden_size
@@ -864,6 +1418,12 @@ class AdaptiveClassifier(ModelHubMixin):
                 trust_remote_code=trust_remote_code
             )
 
+        # A tokenizer saved with the classifier wins over the one the constructor fetched,
+        # so what runs matches what was saved (and needs no network for the tokenizer).
+        if _has_local_tokenizer(model_path):
+            classifier.tokenizer = AutoTokenizer.from_pretrained(
+                str(model_path), trust_remote_code=trust_remote_code)
+
         # Restore label mappings
         classifier.label_to_id = config_dict['label_to_id']
         classifier.id_to_label = {
@@ -873,6 +1433,7 @@ class AdaptiveClassifier(ModelHubMixin):
         
         # Restore training history with backward compatibility
         classifier.training_history = config_dict.get('training_history', {})
+        classifier.calibration = config_dict.get('calibration')
 
         # Load tensors
         tensors = load_file(model_path / "model.safetensors")
@@ -892,6 +1453,7 @@ class AdaptiveClassifier(ModelHubMixin):
 
         # Rebuild memory system
         classifier.memory._restore_from_save()
+        classifier.memory.saved_radii = dict(config_dict.get('ood_radii', {}))
 
         # Restore adaptive head if it exists
         adaptive_head_params = {
@@ -1027,6 +1589,7 @@ This model:
             
         return "\n".join(lines)
 
+    @_synchronized
     def export_onnx(
         self,
         save_directory: Union[str, Path],
@@ -1226,6 +1789,7 @@ This model:
             self.adaptive_head = self.adaptive_head.to(device)
         return self
     
+    @_synchronized
     def get_memory_stats(self) -> Dict[str, Any]:
         """Get memory statistics.
         
@@ -1248,16 +1812,27 @@ This model:
     def _blend_weights(self, label: str) -> Tuple[float, float]:
         """Prototype and neural weights for one label.
 
-        A class the model has barely seen has an unreliable prototype, so the
-        neural head carries more of the decision until the class is
-        established. Both regimes are configurable; before 0.2.0 these were
-        hardcoded and `prototype_weight` did nothing.
+        A class with fewer than `new_class_example_threshold` examples has too
+        little evidence behind the neural head, so the head's weight ramps up
+        linearly from zero and the prototype carries the rest. With a fixed
+        `new_class_prototype_weight` and `new_class_neural_weight` both set,
+        such classes use that split instead (the behaviour before 0.3.0, whose
+        defaults were 0.3 / 0.7).
         """
+        config = self.config
+        established = (config.prototype_weight, config.neural_weight)
         trained = self.training_history.get(label, 0)
-        if trained < getattr(self.config, 'new_class_example_threshold', 10):
-            return (getattr(self.config, 'new_class_prototype_weight', 0.3),
-                    getattr(self.config, 'new_class_neural_weight', 0.7))
-        return (self.config.prototype_weight, self.config.neural_weight)
+        threshold = getattr(config, 'new_class_example_threshold', 10)
+        if trained >= threshold:
+            return established
+
+        fixed_proto = getattr(config, 'new_class_prototype_weight', None)
+        fixed_neural = getattr(config, 'new_class_neural_weight', None)
+        if fixed_proto is not None and fixed_neural is not None:
+            return (fixed_proto, fixed_neural)
+
+        share = trained / threshold          # 0 for a brand-new class, 1 at the threshold
+        return ((1 - share) + share * established[0], share * established[1])
 
     def _resolve_pooling(self) -> str:
         """Decide how to pool token embeddings into one vector per text.
@@ -1344,6 +1919,7 @@ This model:
         # Return embeddings as list
         return [emb.cpu() for emb in embeddings]
 
+    @_synchronized
     def get_example_statistics(self) -> Dict[str, Any]:
         """Get statistics about stored examples and model state."""
         stats = {
@@ -1368,6 +1944,7 @@ This model:
         
         return stats
 
+    @_synchronized
     def predict_batch(
         self,
         texts: List[str],
@@ -1377,7 +1954,8 @@ This model:
         """Predict labels for a batch of texts with improved batching."""
         if not texts:
             raise ValueError("Empty input batch")
-        
+        self._validate_k(k)
+
         all_predictions = []
         
         # Process in batches
@@ -1389,13 +1967,16 @@ This model:
             
             # Get predictions for each embedding
             batch_predictions = []
+            num_classes = len(self.id_to_label)
             for embedding in batch_embeddings:
-                # Get prototype predictions
+                # Score every class, as `predict` does, and trim to k at the end.
+                # Restricting the lookup to k classes made the scores depend on k
+                # whenever there were more than k classes.
                 proto_preds = self.memory.get_nearest_prototypes(
                     embedding,
-                    k=k
+                    k=num_classes or k
                 )
-                
+
                 # Get neural predictions if available
                 if self.adaptive_head is not None:
                     self.adaptive_head.eval()
@@ -1406,18 +1987,15 @@ This model:
                         # Squeeze batch dimension
                         logits = logits.squeeze(0)
                         probs = F.softmax(logits, dim=0)
-                        
-                        values, indices = torch.topk(
-                            probs,
-                            min(k, len(self.id_to_label))
-                        )
+
+                        values, indices = torch.topk(probs, num_classes)
                         head_preds = [
                             (self.id_to_label[idx.item()], val.item())
                             for val, idx in zip(values, indices)
                         ]
                 else:
                     head_preds = []
-                
+
                 # Combine predictions with the configured weights. This path
                 # used to hardcode 0.7/0.3, so `predict` and `predict_batch`
                 # could disagree once a caller changed the config.
@@ -1429,38 +2007,42 @@ This model:
                     combined_scores[label] = (
                         combined_scores.get(label, 0) + score * self._blend_weights(label)[1]
                     )
-                
+
                 # Sort and normalize predictions
                 predictions = sorted(
                     combined_scores.items(),
                     key=lambda x: x[1],
                     reverse=True
                 )
-                
-                # Normalize scores
                 total = sum(score for _, score in predictions)
                 if total > 0:
-                    predictions = [(label, score/total) 
+                    predictions = [(label, score/total)
                                 for label, score in predictions]
-                
+
+                if self.calibration:
+                    predictions = self._calibrate(predictions)
                 batch_predictions.append(predictions[:k])
-            
+
             all_predictions.extend(batch_predictions)
         
         return all_predictions
 
+    @_synchronized
     def clear_memory(self, labels: Optional[List[str]] = None):
-        """Clear memory for specified labels or all if none specified."""
+        """Clear memory for specified labels or all if none specified.
+
+        With labels, this is `forget`: the classes are removed everywhere, so
+        they no longer show up in predictions. Labels that are not known
+        classes are ignored.
+        """
         if labels is None:
             self.memory.clear()
-        else:
-            for label in labels:
-                if label in self.memory.examples:
-                    del self.memory.examples[label]
-                if label in self.memory.prototypes:
-                    del self.memory.prototypes[label]
-            self.memory._rebuild_index()
+            return
+        known = [label for label in labels if label in self.label_to_id]
+        if known:
+            self.forget(known)
 
+    @_synchronized
     def merge_classifiers(self, other: 'AdaptiveClassifier') -> 'AdaptiveClassifier':
         """Merge another classifier into this one."""
         # Verify compatibility
@@ -1488,101 +2070,63 @@ This model:
         return self
     
     def _train_adaptive_head(self, epochs: int = 10):
-        """Train the adaptive head with improved stability."""
+        """Train the adaptive head on every stored example.
+
+        Runs `max(epochs * batches_per_epoch, head_steps)` optimiser steps with
+        a cosine-decayed learning rate and no early stopping. The step floor
+        matters on small memories: ten epochs over a few dozen examples is only
+        about ten steps, which is far too few for the head to learn anything.
+        """
         if not self.memory.examples:
             return
-            
-        # Prepare training data
+
         all_embeddings = []
         all_labels = []
-        
+
         # Sort examples for deterministic order
         for label in sorted(self.memory.examples.keys()):
             examples = sorted(self.memory.examples[label], key=lambda x: x.text)
             for example in examples:
                 all_embeddings.append(example.embedding)
-                # Convert string labels to numeric indices
                 all_labels.append(self.label_to_id[example.label])
-        
-        all_embeddings = torch.stack(all_embeddings)
-        # Ensure labels are Long tensor
-        all_labels = torch.tensor(all_labels, dtype=torch.long, device=self.device)
-        
-        # Normalize embeddings for stable training
-        all_embeddings = F.normalize(all_embeddings, p=2, dim=1)
-        
-        # Create deterministic data loader
-        dataset = torch.utils.data.TensorDataset(all_embeddings, all_labels)
-        loader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=min(32, len(all_embeddings)),
-            shuffle=True,
-            generator=torch.Generator().manual_seed(42)
-        )
-        
-        # Training setup
+
+        embeddings = F.normalize(torch.stack(all_embeddings), p=2, dim=1).to(self.device)
+        labels = torch.tensor(all_labels, dtype=torch.long, device=self.device)
+
+        batch_size = min(32, len(embeddings))
+        batches_per_epoch = math.ceil(len(embeddings) / batch_size)
+        total_steps = max(epochs * batches_per_epoch,
+                          int(getattr(self.config, 'head_steps', 0) or 0))
+
         self.adaptive_head.train()
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.AdamW(
             self.adaptive_head.parameters(),
-            lr=0.001,
+            lr=getattr(self.config, 'head_learning_rate', 0.001),
             weight_decay=0.01,
             betas=(0.9, 0.999)
         )
-        
-        # Learning rate scheduler for stability
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode='min',
-            factor=0.5,
-            patience=2,
-        )
-        
-        best_loss = float('inf')
-        patience_counter = 0
-        patience = 3
-        
-        for epoch in range(epochs):
-            total_loss = 0
-            for batch_embeddings, batch_labels in loader:
-                batch_embeddings = batch_embeddings.to(self.device)
-                batch_labels = batch_labels.to(self.device)
-                
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
+        generator = torch.Generator().manual_seed(42)
+
+        step = 0
+        while step < total_steps:
+            order = torch.randperm(len(embeddings), generator=generator)
+            for start in range(0, len(order), batch_size):
+                index = order[start:start + batch_size]
                 optimizer.zero_grad()
-                outputs = self.adaptive_head(batch_embeddings)
-                
-                # Add shape debugging
-                if epoch == 0 and total_loss == 0:  # Only for first batch of first epoch
-                    logger.debug(f"outputs shape: {outputs.shape}")
-                    logger.debug(f"batch_labels shape: {batch_labels.shape}")
-                    logger.debug(f"batch_labels content: {batch_labels}")
-                
-                loss = criterion(outputs, batch_labels)
+                loss = criterion(self.adaptive_head(embeddings[index]), labels[index])
                 loss.backward()
-                
-                torch.nn.utils.clip_grad_norm_(
-                    self.adaptive_head.parameters(),
-                    max_norm=1.0
-                )
+                torch.nn.utils.clip_grad_norm_(self.adaptive_head.parameters(), max_norm=1.0)
                 optimizer.step()
-                
-                total_loss += loss.item()
-            
-            avg_loss = total_loss / len(loader)
-            scheduler.step(avg_loss)
-            
-            # Early stopping check
-            if avg_loss < best_loss:
-                best_loss = avg_loss
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= patience:
-                    logger.debug(f"Early stopping at epoch {epoch + 1}")
+                scheduler.step()
+                step += 1
+                if step >= total_steps:
                     break
-        
+
+        self.adaptive_head.eval()
         self.train_steps += 1
-    
+
     def _update_adaptive_head(self):
         """Update adaptive head for new classes."""
         num_classes = len(self.label_to_id)
@@ -1708,6 +2252,7 @@ This model:
         
         logger.debug("Completed strategic training step")
     
+    @_synchronized
     def predict_strategic(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
         """Predict assuming the input might be strategically modified.
         
@@ -1755,6 +2300,7 @@ This model:
             logger.warning(f"Strategic prediction failed: {e}. Falling back to regular prediction.")
             return self._predict_regular(text, k)
     
+    @_synchronized
     def predict_robust(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
         """Predict assuming input has already been strategically modified.
         

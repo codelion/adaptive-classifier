@@ -5,28 +5,83 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+  schedule:
+    # Weekly, so breakage on the Hugging Face Hub or in new transformers/torch
+    # releases shows up without waiting for the next PR.
+    - cron: '17 5 * * 1'
+
+# A newer push to the same PR supersedes the run in progress.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  unit-tests:
+  models:
+    # Download the Hugging Face models once, with retries. The test jobs run
+    # offline from the cache, so a Hub rate limit (HTTP 429) or outage fails
+    # this one step instead of dozens of tests across the matrix.
     runs-on: ubuntu-latest
-
+    timeout-minutes: 30
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
-    - name: Set up Python 3.12
-      uses: actions/setup-python@v4
+    - uses: actions/setup-python@v5
       with:
         python-version: '3.12'
+
+    - name: Cache Hugging Face models
+      id: hf-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/huggingface
+        key: hf-models-${{ hashFiles('scripts/prefetch_test_models.py') }}
+
+    - name: Download models
+      if: steps.hf-cache.outputs.cache-hit != 'true'
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      run: |
+        pip install huggingface_hub
+        python scripts/prefetch_test_models.py
+
+  unit-tests:
+    needs: models
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # The two ends of the supported range (requires-python >=3.10).
+        python-version: ['3.10', '3.13']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: pip
+
+    - name: Restore Hugging Face models
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.cache/huggingface
+        key: hf-models-${{ hashFiles('scripts/prefetch_test_models.py') }}
+        fail-on-cache-miss: true
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -e .
-        pip install pytest pytest-cov psutil
+        pip install -e ".[test]"
 
-    - name: Run unit tests
+    # Everything except tests marked `integration`, run offline against the
+    # models prefetched above. Tests marked `integration` run in the job below.
+    - name: Run tests
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        HF_HUB_OFFLINE: '1'
       run: |
         pytest tests/ -v --cov=adaptive_classifier --cov-report=xml --cov-report=term -m "not integration"
 
@@ -35,7 +90,7 @@ jobs:
       with:
         file: ./coverage.xml
         flags: unittests
-        name: codecov-umbrella
+        name: codecov-${{ matrix.python-version }}
         fail_ci_if_error: false
 
   integration-tests:
@@ -44,24 +99,31 @@ jobs:
     timeout-minutes: 30  # Generous timeout for model downloads
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Python 3.12
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
+        cache: pip
+
+    - name: Restore Hugging Face models
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.cache/huggingface
+        key: hf-models-${{ hashFiles('scripts/prefetch_test_models.py') }}
+        fail-on-cache-miss: true
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -e .
-        pip install pytest psutil
+        pip install -e ".[test]"
 
     - name: Run integration tests
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
-        pytest tests/test_enterprise_classifiers_integration.py -v -m "integration" --tb=short
+        pytest tests/ -v -m "integration" --tb=short
 
     - name: Integration test summary
       if: always()

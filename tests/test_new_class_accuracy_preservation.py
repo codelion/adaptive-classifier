@@ -78,7 +78,7 @@ def many_class_data():
 @pytest.fixture
 def large_classifier():
     """Create classifier that will be used for many-class testing."""
-    return AdaptiveClassifier("bert-base-uncased", seed=42)
+    return AdaptiveClassifier("google-bert/bert-base-uncased", seed=42)
 
 
 def test_accuracy_preservation_after_adding_new_classes(large_classifier, many_class_data):
@@ -278,7 +278,7 @@ def test_weight_structure_preservation():
     """Test that head structure expands correctly and uses update_num_classes instead of reinitialization."""
     torch.manual_seed(42)
 
-    classifier = AdaptiveClassifier("bert-base-uncased", seed=42)
+    classifier = AdaptiveClassifier("google-bert/bert-base-uncased", seed=42)
 
     # Add initial classes
     initial_texts = ["Text about cats", "Text about dogs"]
@@ -304,7 +304,7 @@ def test_class_expansion_behavior():
     """Test that adding new classes expands the head instead of reinitializing."""
     torch.manual_seed(42)
 
-    classifier = AdaptiveClassifier("bert-base-uncased", seed=42)
+    classifier = AdaptiveClassifier("google-bert/bert-base-uncased", seed=42)
 
     # Add initial classes
     initial_texts = ["Text about cats", "Text about dogs"]
@@ -340,7 +340,7 @@ def test_improved_accuracy_preservation():
     torch.manual_seed(42)
     np.random.seed(42)
 
-    classifier = AdaptiveClassifier("bert-base-uncased", seed=42)
+    classifier = AdaptiveClassifier("google-bert/bert-base-uncased", seed=42)
 
     # Create a more controlled test with less training
     initial_texts = [

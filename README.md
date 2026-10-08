@@ -108,11 +108,8 @@ pip install adaptive-classifier
 git clone https://github.com/codelion/adaptive-classifier.git
 cd adaptive-classifier
 
-# Install in development mode
-pip install -e .
-
-# Install test dependencies (optional)
-pip install pytest pytest-cov pytest-randomly
+# Install in development mode with test dependencies
+pip install -e ".[test]"
 ```
 
 ---
@@ -147,16 +144,9 @@ Classifiers saved before 0.2.0 keep CLS pooling when reloaded, so upgrading does
 not change their predictions. Retrain, or pass `pooling` explicitly, to pick up
 the new behaviour.
 
-## Prototype and neural weights
+## How a prediction is made
 
-A prediction mixes two signals: similarity to the class prototypes, and the
-trained neural head. `prototype_weight` and `neural_weight` control the mix.
-
-Both keys existed before 0.2.0 but were ignored. Every prediction path used a
-hardcoded 0.7 / 0.3, so `predict` and `predict_batch` could also disagree once a
-caller changed the config. They work now, and the best split depends on how well
-your encoder separates your classes: an encoder that bunches everything together
-produces weak prototypes and is better off leaning on the head.
+A prediction mixes two signals: the **prototype score** (how close the text is to each class's mean embedding) and the **neural head** (a small trained network on the same embeddings). `prototype_weight` and `neural_weight` (default 0.7 / 0.3) control the mix.
 
 ```python
 classifier = AdaptiveClassifier(
@@ -165,10 +155,15 @@ classifier = AdaptiveClassifier(
 )
 ```
 
-A class with few examples has an unreliable prototype, so it leans on the head
-until it is established. That is configurable too, via
-`new_class_example_threshold` (default 10), `new_class_prototype_weight` (0.3)
-and `new_class_neural_weight` (0.7).
+The best split depends on how well your encoder separates your classes: an encoder that bunches everything together produces weak prototypes and is better off leaning on the head.
+
+**Classes with few examples.** Until a class has `new_class_example_threshold` examples (default 10), the head's weight ramps up linearly from zero to `neural_weight` and the prototype takes the rest, so a brand-new class is judged almost entirely by its prototype. (Before 0.3.0 such classes used a fixed 0.3 / 0.7 split in favour of the head, and a head fitted to a handful of points could confidently outvote a correct prototype. To get a fixed split back, set both `new_class_prototype_weight` and `new_class_neural_weight`.)
+
+**Prototype sharpness.** Prototype scores are `softmax(-distance² / prototype_temperature)` with a default temperature of 0.25. Lower values make the nearest class stand out more. Set `prototype_temperature` to `None` for the scoring used before 0.3.0, which barely separated the nearest class from the rest.
+
+**Head training.** The head is trained for at least `head_steps` optimiser steps (default 300) with a cosine-decayed `head_learning_rate` (default 0.003). That takes roughly 1-2 seconds on a small memory; lower `head_steps` (for example to 100) if you add examples very frequently. Before 0.3.0 the head got about ten steps, too few to learn even a simple XOR pattern, which prototypes alone cannot separate.
+
+Classifiers saved before 0.3.0 keep their old scoring when reloaded, so upgrading does not change their predictions. Retrain, or set the keys above, to adopt the new behaviour.
 
 ## ⚡ Quick Start
 
@@ -315,7 +310,95 @@ ONNX:     2.1ms/query  (4.0x faster) ✓
 
 > **Note:** ONNX optimization is included by default. For GPU inference, PyTorch is automatically used for best performance.
 
+#### Multilingual models and other runtimes (.NET, JavaScript, ...)
+
+Any multilingual encoder works as the base model, and a saved classifier can be run from C#, Node or the browser through an ONNX runtime. See the [deployment guide](docs/deployment.md) and the dependency-light reference implementation in [`examples/portable_inference.py`](examples/portable_inference.py).
+
 ## Advanced Usage
+
+### scikit-learn Interface
+
+`SklearnAdaptiveClassifier` works with `Pipeline`, `cross_val_score` and `GridSearchCV`. `X` is a list of strings.
+
+```python
+from adaptive_classifier import SklearnAdaptiveClassifier
+from sklearn.model_selection import cross_val_score
+
+clf = SklearnAdaptiveClassifier("sentence-transformers/all-MiniLM-L6-v2")
+clf.fit(texts, labels)
+clf.predict(["Where is my refund?"])          # class labels
+clf.predict_proba(["Where is my refund?"])    # columns follow clf.classes_
+cross_val_score(clf, texts, labels, cv=5)
+
+# The library's strength: keep learning, including brand-new classes
+clf.partial_fit(["App crashes on login"], ["bug"])
+
+clf.classifier_.save("./model")               # the underlying AdaptiveClassifier
+```
+
+`fit` starts over each time; `partial_fit` adds to what is already learned. A fitted estimator holds a FAISS index and can't be pickled, so save `classifier_` instead.
+
+### Calibrated Confidence and Prediction Sets
+
+Raw scores are not probabilities: a model can say 0.9 and be right 70% of the time. Fit a calibration on labelled examples the model was *not* trained on:
+
+```python
+info = classifier.calibrate(held_out_texts, held_out_labels)
+info["ece_before"], info["ece_after"]       # expected calibration error, lower is better
+
+classifier.predict(text)                    # confidences now match how often the model is right
+classifier.predict(text, abstain_below=0.8) # so thresholds like this mean what they say
+
+# A set of labels that contains the true one at least 90% of the time
+classifier.predict_set(text, alpha=0.1)     # [("billing", 0.55), ("refunds", 0.31)]
+classifier.calibration_report(test_texts, test_labels)   # check it on separate data
+```
+
+One easy input gives a one-label set; an ambiguous one gives several. Calibration is saved with the model and discarded if you add or forget a class; re-run it after substantial new data.
+
+### Active Learning and Drift
+
+```python
+# Which of these 5,000 unlabeled texts should a person label next?
+for index, score in classifier.suggest_labels(unlabeled, n=20, strategy="margin", diverse=True):
+    print(unlabeled[index])
+
+classifier.suggest_labels(unlabeled, n=20, strategy="ood")   # hunt for classes you have not defined yet
+
+# Has this week's traffic moved away from what the model knows?
+report = classifier.drift_report(recent_texts)
+report["drifted"], report["ood_rate"], report["p_value"]
+```
+
+`margin` (the default) finds texts on a decision boundary; `ood` finds texts unlike any known class. Uncertainty sampling is not guaranteed to beat labeling at random: when classes overlap so much that the confusion is irreducible noise, labeling the confusing texts teaches the model little (it did not in a synthetic test with heavily overlapping classes). It earns its keep when ambiguity comes from missing data, and `ood` is the reliable way to find classes you have not defined yet.
+
+### Serving
+
+```bash
+pip install "adaptive-classifier[serve]"
+python -m adaptive_classifier.serving ./my_classifier --port 8000
+curl -s localhost:8000/predict -H 'content-type: application/json' -d '{"text": "where is my refund?"}'
+```
+
+Predictions, batches, conformal sets and out-of-distribution checks over HTTP, plus optional API-key-protected endpoints for adding examples and classes while it runs. One classifier is safe to share between threads, and `await classifier.apredict(...)` keeps an event loop responsive. See [docs/serving.md](docs/serving.md) and `docker/Dockerfile`.
+
+### Fixing Mistakes and Knowing When to Abstain
+
+```python
+# Remove a wrongly labelled example, or a whole class
+classifier.remove_examples(["Refund my order"], label="technical")
+classifier.forget("obsolete_class")
+
+# Detect inputs unlike anything the classifier has seen
+classifier.is_ood("completely unrelated text")        # True / False
+classifier.ood_score("completely unrelated text")     # ~1 or below = familiar, higher = further out
+
+# Abstain instead of guessing (an empty list means "don't know")
+classifier.predict(text, abstain_below=0.6)           # low confidence
+classifier.predict(text, abstain_ood=True)            # out of distribution
+```
+
+Out-of-distribution scores compare a text's distance from the nearest class prototype to that class's own spread, so no per-model tuning of absolute distances is needed. The default `ood_threshold` of 1.25 is a starting point; check it on held-out data.
 
 ### Adding New Classes Dynamically
 

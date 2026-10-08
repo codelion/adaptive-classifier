@@ -1,0 +1,11 @@
+.git
+.github
+tests
+docs
+scripts
+examples
+build
+dist
+**/__pycache__
+**/*.egg-info
+*.webp

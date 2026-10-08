@@ -61,8 +61,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 3. Install dependencies:
 ```bash
-pip install -r requirements.txt
-pip install -e .
+pip install -e ".[test]"
 ```
 
 4. Run tests:

@@ -56,14 +56,19 @@ def test_reported_confidence_values():
         assert abs(cat_conf_before - cat_conf_after) < 0.01, \
             f"Cat confidence dropped from {cat_conf_before:.4f} to {cat_conf_after:.4f}"
         
-        # Both before and after should be around 0.8997 (blended prediction)
-        # not 0.9997 (pure neural prediction)
-        assert 0.85 < fish_conf_before < 0.95, \
-            f"Before save confidence should be blended, got {fish_conf_before:.4f}"
-        
-        assert 0.85 < fish_conf_after < 0.95, \
-            f"After load confidence should be blended, got {fish_conf_after:.4f}"
+        # The reported bug was a pure-neural score (0.9997) before saving versus a
+        # blended one (0.8997) afterwards. Both sides must now be the same blend:
+        # the right label, confident but not the saturated head-only value. (The
+        # exact blended value moved in 0.3.0, when prototype scores were sharpened
+        # and the head's weight started ramping up with the number of examples, so
+        # this no longer pins a 0.85-0.95 window.)
+        assert result_fish_before[0][0] == "foo" and result_fish_after[0][0] == "foo"
+        assert result_cat_before[0][0] == "bar" and result_cat_after[0][0] == "bar"
+        assert 0.5 < fish_conf_before < 0.9995, \
+            f"Before save confidence should be a blend, got {fish_conf_before:.4f}"
 
+        assert 0.5 < fish_conf_after < 0.9995, \
+            f"After load confidence should be a blend, got {fish_conf_after:.4f}"
 
 if __name__ == "__main__":
     test_reported_confidence_values()

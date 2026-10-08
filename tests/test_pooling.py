@@ -132,6 +132,8 @@ def test_blend_weight_defaults():
     assert config.prototype_weight == 0.7
     assert config.neural_weight == 0.3
     assert config.new_class_example_threshold == 10
+    assert config.new_class_prototype_weight is None      # None: ramp the head in with evidence
+    assert config.new_class_neural_weight is None
 
 
 def test_blend_weights_are_configurable():
@@ -141,11 +143,23 @@ def test_blend_weights_are_configurable():
     assert clf._blend_weights("a") == (0.2, 0.8)
 
 
-def test_new_classes_lean_on_the_neural_head():
-    """A class with few examples has an unreliable prototype."""
+def test_new_classes_lean_on_their_prototypes():
+    """A class with few examples has no evidence behind the neural head, so the head's
+    weight ramps up from zero as the class accumulates examples (0.3.0; before that
+    such classes got a fixed 0.3 prototype / 0.7 head split)."""
     clf = AdaptiveClassifier(MODEL, device="cpu")
-    clf.training_history = {"established": 50, "fresh": 2}
+    clf.training_history = {"established": 50, "fresh": 2, "unseen": 0}
     assert clf._blend_weights("established") == (0.7, 0.3)
+    assert clf._blend_weights("unseen") == (1.0, 0.0)
+    prototype, neural = clf._blend_weights("fresh")
+    assert neural == pytest.approx(0.06) and prototype == pytest.approx(0.94)
+
+
+def test_fixed_new_class_weights_can_still_be_set():
+    clf = AdaptiveClassifier(MODEL, device="cpu",
+                             config={"new_class_prototype_weight": 0.3,
+                                     "new_class_neural_weight": 0.7})
+    clf.training_history = {"fresh": 2}
     assert clf._blend_weights("fresh") == (0.3, 0.7)
 
 
@@ -153,7 +167,8 @@ def test_new_class_threshold_is_configurable():
     clf = AdaptiveClassifier(MODEL, device="cpu",
                              config={"new_class_example_threshold": 100})
     clf.training_history = {"a": 50}
-    assert clf._blend_weights("a") == (0.3, 0.7)      # still "new" at 50
+    prototype, neural = clf._blend_weights("a")        # halfway up the ramp at 50 of 100
+    assert neural == pytest.approx(0.15) and prototype == pytest.approx(0.85)
 
 
 def test_blend_weight_changes_the_prediction():
