@@ -98,6 +98,13 @@ Parameters:
 - `include_onnx`: Also export the encoder as ONNX (needed to load without PyTorch and for non-Python runtimes)
 - `quantize_onnx`: Also write an INT8 copy (`onnx/model_quantized.onnx`)
 
+What a saved classifier keeps: every class prototype (averaged over all the examples the class was trained on), the neural head, label maps, training counts, class spreads and calibration, plus `num_representative_examples` examples per class (default 5). Not the full training set.
+
+Consequences when you load and keep learning:
+- Prototypes keep their saved position. New examples are folded in with the weight of the examples the prototype was saved from, so adding one example to a class trained on 30 barely moves it.
+- The neural head is retrained from the examples held in memory, which after a load are only the representative ones. If the head matters for your data, keep the original training data and re-add it, or raise `num_representative_examples` before saving.
+- `remove_examples` on a loaded class recomputes its prototype from the examples that are held.
+
 #### load
 
 ```python
