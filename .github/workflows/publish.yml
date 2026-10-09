@@ -4,12 +4,20 @@ on:
     types: [created]
 
 jobs:
+  # The full test workflow (model prefetch with retries, both Python versions, the
+  # Node.js example, integration tests). Nothing is published unless it passes.
+  tests:
+    uses: ./.github/workflows/test.yml
+    secrets: inherit
+
   pypi-publish:
     name: Publish release to PyPI
+    needs: tests
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/p/adaptive-classifier
+    # Only this job can publish; the test code above never sees these credentials.
     permissions:
       id-token: write
     steps:
@@ -18,16 +26,21 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.x"
-      - name: Install dependencies
+
+      - name: Check the release tag matches the package version
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/adaptive_classifier/__init__.py)
+          tag="${{ github.event.release.tag_name }}"
+          echo "package version: $version, release tag: $tag"
+          if [ "v$version" != "$tag" ] && [ "$version" != "$tag" ]; then
+            echo "The release tag $tag does not match the package version $version" >&2
+            exit 1
+          fi
+
+      - name: Install build tools
         run: |
           python -m pip install --upgrade pip
           pip install build
-      - name: Run tests
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          pip install -e ".[test]"
-          pytest tests/
       - name: Build package
         run: |
           python -m build

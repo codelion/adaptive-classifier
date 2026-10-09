@@ -29,6 +29,9 @@
 - scikit-learn wrapper: `partial_fit(classes=[...])` now lists every declared class in `classes_`; labels that would become the same class name (`1` and `"1"`), `None` and `NaN` are rejected; the docs wrongly said a fitted estimator cannot be pickled.
 - `PrototypeMemory.get_strategic_prototypes` raised `NameError` (a missing import) whenever strategic prototypes existed.
 
+- `examples/basic_usage.py` crashed on a default CPU install (it called `.model.eval()` on an ONNX Runtime model). The docs no longer recommend a `--workers` flag the server does not have, say the Docker image is unverified, or omit parameters (`use_onnx`, `abstain_*`, `include_onnx`, `pooling`, ...) that exist.
+- The release workflow ran its own cut-down test step with PyPI credentials in scope. It now calls the full test workflow, only the publish job holds credentials, and the release tag must match the package version.
+
 ### Added
 - Tests for strategic mode (`tests/test_strategic.py`); README and `docs/API.md` document it and `MultiLabelAdaptiveClassifier`, and the settings added in 0.3.0.
 - `benchmark` and `scripts` extras pin `datasets<4` and `huggingface-hub<1.0`, which keeps `transformers` working.

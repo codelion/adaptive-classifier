@@ -11,7 +11,9 @@ AdaptiveClassifier(
     model_name: str,
     device: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
-    seed: int = 42
+    seed: int = 42,
+    use_onnx: Union[bool, str, None] = "auto",
+    trust_remote_code: bool = False
 )
 ```
 
@@ -22,6 +24,8 @@ Parameters:
 - `device`: Device to run the model on ("cuda" or "cpu"). If None, automatically detects GPU availability
 - `config`: Optional configuration dictionary (see ModelConfig for details)
 - `seed`: Random seed for initialization (default: 42)
+- `use_onnx`: Run the encoder with ONNX Runtime: `"auto"` (default) uses ONNX on CPU and PyTorch on GPU, `True`/`False` force it. With ONNX, `classifier.model` is an ONNX Runtime model, not a `torch.nn.Module`
+- `trust_remote_code`: Allow models that ship custom code (default: False)
 
 ### Methods
 
@@ -43,7 +47,8 @@ Raises:
 #### predict
 
 ```python
-def predict(text: str, k: int = 5) -> List[Tuple[str, float]]
+def predict(text: str, k: int = 5, abstain_below: Optional[float] = None,
+            abstain_ood: bool = False) -> List[Tuple[str, float]]
 ```
 
 Predict labels for a single text input.
@@ -51,6 +56,8 @@ Predict labels for a single text input.
 Parameters:
 - `text`: Input text to classify
 - `k`: Number of top predictions to return (default: 5)
+- `abstain_below`: Return an empty list when the top confidence is below this value
+- `abstain_ood`: Return an empty list when the text is out of distribution (see `is_ood`)
 
 Returns:
 - List of (label, confidence) tuples, sorted by confidence
@@ -81,26 +88,32 @@ Returns:
 #### save
 
 ```python
-def save(save_dir: str)
+def save(save_dir: str, include_onnx: bool = True, quantize_onnx: bool = True)
 ```
 
 Save the classifier state to disk.
 
 Parameters:
 - `save_dir`: Directory to save the model state
+- `include_onnx`: Also export the encoder as ONNX (needed to load without PyTorch and for non-Python runtimes)
+- `quantize_onnx`: Also write an INT8 copy (`onnx/model_quantized.onnx`)
 
 #### load
 
 ```python
 @classmethod
-def load(cls, save_dir: str, device: Optional[str] = None) -> 'AdaptiveClassifier'
+def load(cls, save_dir: str, device: Optional[str] = None, use_onnx: Union[bool, str, None] = "auto",
+         prefer_quantized: bool = True, trust_remote_code: bool = False) -> 'AdaptiveClassifier'
 ```
 
-Load a saved classifier from disk.
+Load a saved classifier from disk or from the Hugging Face Hub (`save_dir` may be a repo id). A saved `MultiLabelAdaptiveClassifier` loads as one.
 
 Parameters:
-- `save_dir`: Directory containing the saved model state
+- `save_dir`: Directory (or Hub repo id) containing the saved model state
 - `device`: Optional device to load the model onto
+- `use_onnx`: `"auto"` (default), `True` or `False`
+- `prefer_quantized`: Use the INT8 ONNX copy when there is one (default: True)
+- `trust_remote_code`: Allow models that ship custom code (default: False)
 
 Returns:
 - Loaded AdaptiveClassifier instance
@@ -283,6 +296,9 @@ Training Settings:
 - `early_stopping_patience`: Patience for early stopping (default: 3)
 - `min_examples_per_class`: Minimum examples required per class (default: 3)
 
+General Settings:
+- `pooling`: How token embeddings become one vector: `"auto"` (default; the model's own sentence-transformers setting, falling back to mean), `"mean"` or `"cls"`. The resolved value is saved with the classifier
+
 Prediction Settings:
 - `prototype_weight`: Weight for prototype predictions (default: 0.7)
 - `neural_weight`: Weight for neural network predictions (default: 0.3)
@@ -298,6 +314,8 @@ Head Training Settings:
 Out-of-distribution Settings:
 - `ood_threshold`: Distance-to-radius ratio above which `is_ood` is true (default: 1.25)
 - `ood_min_radius`: Smallest class radius used for that ratio (default: 0.05)
+
+Strategic Mode Settings (see Strategic mode below): `enable_strategic_mode`, `cost_function_type`, `cost_coefficients`, `strategic_lambda`, `strategic_training_frequency`, `strategic_blend_regular_weight`, `strategic_blend_strategic_weight`, `strategic_robust_proto_weight`, `strategic_robust_head_weight`, `strategic_prediction_proto_weight`, `strategic_prediction_head_weight`.
 
 Device Settings:
 - `device_map`: Device mapping strategy (default: 'auto')

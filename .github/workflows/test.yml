@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+  # The release workflow runs the same tests before publishing.
+  workflow_call:
   schedule:
     # Weekly, so breakage on the Hugging Face Hub or in new transformers/torch
     # releases shows up without waiting for the next PR.

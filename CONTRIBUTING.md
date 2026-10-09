@@ -76,7 +76,7 @@ We use:
 - [isort](https://github.com/PyCQA/isort) for import sorting
 - [flake8](https://github.com/PyCQA/flake8) for linting
 
-Before submitting a PR, please run:
+Before submitting a PR, please run (install the tools first: `pip install black isort flake8`):
 ```bash
 black .
 isort .

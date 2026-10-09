@@ -16,8 +16,11 @@ on:
     branches: [ main ]
     paths:
       - 'docker/**'
+      - '.dockerignore'
       - 'pyproject.toml'
       - 'src/adaptive_classifier/serving.py'
+      - 'scripts/docker_smoke.py'
+      - '.github/workflows/docker.yml'
   workflow_dispatch:
   schedule:
     - cron: '43 5 * * 1'

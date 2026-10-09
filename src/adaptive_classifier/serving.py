@@ -14,10 +14,11 @@ updates are allowed, ``POST /examples``, ``POST /forget`` and
 ``POST /remove_examples``.
 
 The classifier takes a lock around every operation, so one process is safe to
-share across requests; scale throughput with ``--workers`` (separate
-processes, each with its own copy and its own updates) rather than threads.
-Updates therefore only reach the worker that handled them. Run a single
-worker if you enable them, and pass ``--save-dir`` to persist what was learned.
+share across requests; scale throughput with several processes (for example
+containers behind a load balancer, each with its own copy and its own updates)
+rather than threads. Updates therefore only reach the process that handled
+them. Run a single process if you enable them, and pass ``--save-dir`` to
+persist what was learned.
 """
 
 import argparse
