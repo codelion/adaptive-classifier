@@ -15,6 +15,8 @@
 
 - `add_examples` now rejects blank texts and blank labels (with the index of the first offender) instead of learning them; a blank text carries no information but still counted as an example of its class and moved its prototype. **Behaviour change:** code that passes empty rows now gets a `ValueError`. `select_representative_examples(k=0)` returns an empty list instead of failing inside scikit-learn.
 
+- `PrototypeMemory.get_strategic_prototypes` raised `NameError` (a missing import) whenever strategic prototypes existed.
+
 ### Added
 - Tests for strategic mode (`tests/test_strategic.py`); README and `docs/API.md` document it and `MultiLabelAdaptiveClassifier`, and the settings added in 0.3.0.
 - `benchmark` and `scripts` extras pin `datasets<4` and `huggingface-hub<1.0`, which keeps `transformers` working.

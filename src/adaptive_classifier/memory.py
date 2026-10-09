@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 from typing import List, Dict, Tuple, Optional, Any
 from collections import defaultdict
