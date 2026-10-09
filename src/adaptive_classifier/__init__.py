@@ -5,7 +5,7 @@ from .multilabel import MultiLabelAdaptiveClassifier, MultiLabelAdaptiveHead
 from .sklearn_api import SklearnAdaptiveClassifier
 from huggingface_hub import ModelHubMixin
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "AdaptiveClassifier",

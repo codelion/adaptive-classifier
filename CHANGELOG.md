@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
 ### Fixed
 - `MultiLabelAdaptiveClassifier`: `forget()` and `remove_examples()` no longer crash; `load(..., use_onnx=...)` works and the multi-label settings and per-label thresholds are saved and restored; a bare-string label (which was split into one class per character) is rejected; `max_labels=0` returns nothing and `max_labels` caps the `min_predictions` top-up; the head is trained for `head_steps` steps and retrained when labels are added, instead of ~10 steps with a softmax loss that did not apply; the public methods hold the instance lock.
