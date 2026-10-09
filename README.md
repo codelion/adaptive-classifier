@@ -488,17 +488,17 @@ print(f"Label-specific thresholds: {stats['label_thresholds']}")
 config = {
     'enable_strategic_mode': True,
     'cost_function_type': 'linear',
-    'cost_coefficients': {
-        'sentiment_words': 0.5,    # Cost to change sentiment-bearing words
-        'length_change': 0.1,      # Cost to modify text length
-        'word_substitution': 0.3   # Cost to substitute words
-    },
+    # One cost per embedding dimension (384 for all-MiniLM-L6-v2, 768 for BERT-base):
+    # how expensive it is for an adversary to push that dimension upward.
+    'cost_coefficients': [0.3] * 768,
     'strategic_blend_regular_weight': 0.6,   # Weight for regular predictions
     'strategic_blend_strategic_weight': 0.4  # Weight for strategic predictions
 }
 
 classifier = AdaptiveClassifier("bert-base-uncased", config=config)
 classifier.add_examples(texts, labels)
+# If cost_coefficients has the wrong length, strategic mode is switched off and the
+# reason is logged; check classifier.strategic_mode.
 
 # Robust predictions that consider potential manipulation
 text = "This product has amazing quality features!"

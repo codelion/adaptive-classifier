@@ -53,15 +53,19 @@ serve = [
     "uvicorn>=0.23.0",
 ]
 # Benchmark harness: scripts/benchmark_fewshot.py (see docs/benchmark.md).
+# transformers 4.x needs huggingface-hub<1.0, but datasets 4+ pulls in a newer hub and
+# breaks the install, so these extras keep both on compatible releases.
 benchmark = [
     "setfit>=1.1.0",
-    "datasets>=2.14.0",
+    "datasets>=2.14.0,<4",
+    "huggingface-hub>=0.34,<1.0",
 ]
 # Only needed to run the scripts/ benchmarks and data generators.
 scripts = [
     "tqdm>=4.65.0",
     "textdistance",
-    "datasets",
+    "datasets<4",
+    "huggingface-hub>=0.34,<1.0",
     "sentence-transformers",
     "openai",
 ]

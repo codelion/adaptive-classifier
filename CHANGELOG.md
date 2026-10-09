@@ -5,7 +5,12 @@
 ### Fixed
 - `MultiLabelAdaptiveClassifier`: `forget()` and `remove_examples()` no longer crash; `load(..., use_onnx=...)` works and the multi-label settings and per-label thresholds are saved and restored; a bare-string label (which was split into one class per character) is rejected; `max_labels=0` returns nothing and `max_labels` caps the `min_predictions` top-up; the head is trained for `head_steps` steps and retrained when labels are added, instead of ~10 steps with a softmax loss that did not apply; the public methods hold the instance lock.
 
+- Strategic mode: `cost_coefficients` is validated (a dict of named features, as the README once showed, or a list of the wrong length used to disable strategic mode with a cryptic message; the reason now says what is wrong and how many entries are needed); the best response explored only the first few embedding dimensions and used unseeded randomness, so it now samples the cheapest and a random spread of dimensions with a fixed seed; `predict`, `predict_strategic` and `predict_robust` scores no longer change with `k`; `evaluate_strategic_robustness` no longer divides by zero, rejects unknown labels with `ValueError`, and is repeatable and thread-safe.
+- Strategic-mode predictions are different from 0.3.0 because of the candidate and `k` fixes.
+
 ### Added
+- Tests for strategic mode (`tests/test_strategic.py`); README and `docs/API.md` document it and `MultiLabelAdaptiveClassifier`, and the settings added in 0.3.0.
+- `benchmark` and `scripts` extras pin `datasets<4` and `huggingface-hub<1.0`, which keeps `transformers` working.
 - `examples/javascript/portable_inference.mjs`: a tested Node.js port of the portable inference, and a Docker smoke test (`scripts/docker_smoke.py`, `.github/workflows/docker.yml`) that builds the serving image and queries it.
 - README: measured guidance on tuning `new_class_example_threshold` for new-class recall.
 

@@ -102,24 +102,37 @@ class SeparableCostFunction(StrategicCostFunction):
         return best_response
     
     def _generate_candidates(self, x: torch.Tensor, num_candidates: int = 50) -> List[torch.Tensor]:
-        """Generate candidate points for optimization."""
-        candidates = [x]  # Always include the original point
-        
-        # Generate candidates by varying each feature
-        for i in range(len(x)):
-            for delta in torch.linspace(-2.0, 2.0, 10):  # Reasonable range for feature changes
-                if delta == 0:
-                    continue
+        """Candidate responses: the original point, single-feature moves, one random jitter.
+
+        Single-feature moves are tried on the cheapest features to change (those
+        are where an agent gets the most for its money) and on a random sample of
+        the rest, so every dimension of a long embedding can be reached. The
+        sampling uses a fixed seed: the same input always gets the same response.
+        """
+        generator = torch.Generator().manual_seed(0)
+        n = len(x)
+        deltas = (-2.0, -1.0, -0.5, 0.5, 1.0, 2.0)
+        n_dims = max(1, (num_candidates - 2) // len(deltas))
+
+        price = self.c2.detach().abs().cpu().to(torch.float32)
+        if price.shape[0] != n:
+            price = torch.zeros(n)
+        cheapest_first = torch.argsort(price + 1e-6 * torch.rand(n, generator=generator))
+        n_cheap = min(n, (n_dims + 1) // 2)
+        chosen = cheapest_first[:n_cheap].tolist()
+        rest = cheapest_first[n_cheap:]
+        if len(rest) and n_dims > n_cheap:
+            pick = torch.randperm(len(rest), generator=generator)[:n_dims - n_cheap]
+            chosen += rest[pick].tolist()
+
+        candidates = [x]
+        for i in chosen:
+            for delta in deltas:
                 candidate = x.clone()
                 candidate[i] += delta
                 candidates.append(candidate)
-        
-        # Generate some random candidates
-        for _ in range(num_candidates - len(candidates)):
-            noise = torch.randn_like(x) * 0.5  # Small random perturbations
-            candidate = x + noise
-            candidates.append(candidate)
-        
+        jitter = torch.randn(n, generator=generator) * 0.5
+        candidates.append(x + jitter.to(device=x.device, dtype=x.dtype))
         return candidates[:num_candidates]
 
 
@@ -317,7 +330,9 @@ class StrategicEvaluator:
         
         # Compute robustness metrics
         results['robustness_score'] = results['accuracy_gaming_0.0'] - results['accuracy_gaming_1.0']
-        results['relative_robustness'] = results['accuracy_gaming_1.0'] / results['accuracy_gaming_0.0']
+        # Undefined (nan) when the classifier gets everything wrong without gaming.
+        base = results['accuracy_gaming_0.0']
+        results['relative_robustness'] = results['accuracy_gaming_1.0'] / base if base > 0 else float('nan')
         
         return results
     
@@ -338,13 +353,14 @@ class StrategicEvaluator:
             Modified embeddings after strategic behavior
         """
         strategic_embeddings = []
+        generator = torch.Generator().manual_seed(0)    # which inputs game is repeatable
         
         def classifier_func(x):
             with torch.no_grad():
                 return torch.softmax(classifier(x), dim=-1)
         
         for embedding in embeddings:
-            if torch.rand(1).item() < gaming_level:
+            if torch.rand(1, generator=generator).item() < gaming_level:
                 # Apply strategic behavior
                 strategic_embedding = self.cost_function.compute_best_response(
                     embedding, classifier_func

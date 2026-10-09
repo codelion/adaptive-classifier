@@ -511,14 +511,16 @@ class AdaptiveClassifier(ModelHubMixin):
 
         # If strategic mode is not enabled, use regular prediction
         # Calibration rescales the whole distribution, so it needs every class.
-        internal_k = len(self.id_to_label) if self.calibration else k
+        # The strategic blend renormalises over the classes it was given, so it needs all of them too.
+        internal_k = len(self.id_to_label) if (self.calibration or self.strategic_mode) else k
         if not self.strategic_mode:
             predictions = self._predict_regular(text, internal_k)
         else:
             # Dual prediction system: blend strategic and regular predictions
             predictions = self._predict_dual(text, internal_k)
         if self.calibration:
-            predictions = self._calibrate(predictions)[:k]
+            predictions = self._calibrate(predictions)
+        predictions = predictions[:k]
 
         if abstain_below is not None and (not predictions or predictions[0][1] < abstain_below):
             return []
@@ -2186,26 +2188,44 @@ This model:
         return [examples[idx] for idx in selected_indices]
     
     def _initialize_strategic_components(self):
-        """Initialize strategic classification components."""
+        """Initialize strategic classification components.
+
+        `cost_coefficients` must hold one cost per embedding dimension. When it
+        does not (or the cost function type is unknown) strategic mode is
+        switched off and the reason is logged, so a mistake never silently
+        leaves a classifier unprotected without saying so.
+        """
         try:
-            # Create cost function from config
-            if self.config.cost_coefficients:
-                self.strategic_cost_function = CostFunctionFactory.create_cost_function(
-                    cost_type=self.config.cost_function_type,
-                    cost_coefficients=self.config.cost_coefficients
+            coefficients = self.config.cost_coefficients
+            if isinstance(coefficients, dict):
+                raise ValueError(
+                    "cost_coefficients must be a list with one cost per embedding dimension "
+                    f"({self.embedding_dim} for this encoder); a dict of named features is not supported"
                 )
-                
-                # Initialize strategic optimizer and evaluator
-                self.strategic_optimizer = StrategicOptimizer(self.strategic_cost_function)
-                self.strategic_evaluator = StrategicEvaluator(self.strategic_cost_function)
-                
-                logger.info(f"Initialized strategic mode with {self.config.cost_function_type} cost function")
-            else:
-                logger.warning("Strategic mode enabled but no cost coefficients provided")
+            if coefficients is None or len(coefficients) == 0:
+                raise ValueError(
+                    "Strategic mode needs cost_coefficients: a list with one cost per "
+                    f"embedding dimension ({self.embedding_dim} for this encoder)"
+                )
+            if len(coefficients) != self.embedding_dim:
+                raise ValueError(
+                    f"cost_coefficients has {len(coefficients)} entries but the encoder's "
+                    f"embeddings have {self.embedding_dim} dimensions"
+                )
+            self.strategic_cost_function = CostFunctionFactory.create_cost_function(
+                cost_type=self.config.cost_function_type,
+                cost_coefficients=coefficients
+            )
+            self.strategic_optimizer = StrategicOptimizer(self.strategic_cost_function)
+            self.strategic_evaluator = StrategicEvaluator(self.strategic_cost_function)
+            logger.info(f"Initialized strategic mode with {self.config.cost_function_type} cost function")
         except Exception as e:
-            logger.error(f"Failed to initialize strategic components: {e}")
+            logger.error(f"Strategic mode disabled: {e}")
+            self.strategic_cost_function = None
+            self.strategic_optimizer = None
+            self.strategic_evaluator = None
             self.config.enable_strategic_mode = False
-    
+
     @property
     def strategic_mode(self) -> bool:
         """Check if strategic mode is enabled and properly initialized."""
@@ -2355,26 +2375,21 @@ This model:
         Returns:
             List of (label, confidence) tuples
         """
+        # Score every class and trim at the end, so a score does not depend on k.
+        num_classes = len(self.id_to_label)
         with torch.no_grad():
-            # Get prototype predictions
-            proto_preds = self.memory.get_nearest_prototypes(embedding, k=k)
-            
-            # Get neural predictions if available
+            proto_preds = self.memory.get_nearest_prototypes(embedding, k=max(num_classes, 1))
+
             if self.adaptive_head is not None:
                 self.adaptive_head.eval()
                 input_embedding = embedding.unsqueeze(0).to(self.device)
-                logits = self.adaptive_head(input_embedding)
-                logits = logits.squeeze(0)
+                logits = self.adaptive_head(input_embedding).squeeze(0)
                 probs = F.softmax(logits, dim=0)
-                
-                values, indices = torch.topk(probs, min(k, len(self.id_to_label)))
-                head_preds = [
-                    (self.id_to_label[idx.item()], val.item())
-                    for val, idx in zip(values, indices)
-                ]
+                head_preds = [(self.id_to_label[i], probs[i].item()) for i in range(len(probs))
+                              if i in self.id_to_label]
             else:
                 head_preds = []
-        
+
         # Combine predictions with strategic adjustments
         combined_scores = {}
         
@@ -2413,6 +2428,7 @@ This model:
         
         return predictions[:k]
     
+    @_synchronized
     def evaluate_strategic_robustness(
         self,
         test_texts: List[str],
@@ -2422,7 +2438,14 @@ This model:
         """Evaluate strategic robustness of the classifier."""
         if not self.strategic_mode:
             raise ValueError("Strategic mode not enabled")
-        
+        if not test_texts or len(test_texts) != len(test_labels):
+            raise ValueError("test_texts and test_labels must be non-empty and the same length")
+        unknown = sorted(set(test_labels) - set(self.label_to_id))
+        if unknown:
+            raise ValueError(f"Unknown labels: {unknown}")
+        if self.adaptive_head is None:
+            raise ValueError("The classifier has no trained head to evaluate")
+
         # Get test embeddings
         test_embeddings = torch.stack(self._get_embeddings(test_texts))
         

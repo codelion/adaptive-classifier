@@ -287,6 +287,17 @@ Prediction Settings:
 - `prototype_weight`: Weight for prototype predictions (default: 0.7)
 - `neural_weight`: Weight for neural network predictions (default: 0.3)
 - `min_confidence`: Minimum confidence threshold (default: 0.1)
+- `prototype_temperature`: Prototype scores are `softmax(-distance² / temperature)` (default: 0.25; `None` restores the scoring used before 0.3.0)
+- `new_class_example_threshold`: Examples a class needs before the head has its full weight (default: 10)
+- `new_class_prototype_weight` / `new_class_neural_weight`: Fixed split below that threshold (default: `None`, meaning the head's weight ramps up linearly; set both to use a fixed split)
+
+Head Training Settings:
+- `head_steps`: Minimum optimiser steps each time the head is trained (default: 300)
+- `head_learning_rate`: Peak learning rate of the cosine schedule (default: 0.003)
+
+Out-of-distribution Settings:
+- `ood_threshold`: Distance-to-radius ratio above which `is_ood` is true (default: 1.25)
+- `ood_min_radius`: Smallest class radius used for that ratio (default: 0.05)
 
 Device Settings:
 - `device_map`: Device mapping strategy (default: 'auto')
@@ -416,3 +427,50 @@ scikit-learn estimator wrapping `AdaptiveClassifier`. `X` is a 1-D sequence of s
 | `classifier_` | The underlying fitted `AdaptiveClassifier` (`save`, `push_to_hub`, `forget`, `remove_examples`, `is_ood`, ...) |
 
 Hyperparameters such as `prototype_weight` go inside `config`, so grid searches take `{"config": [{...}, {...}]}`. Fitted estimators cannot be pickled (they hold a FAISS index); persist `classifier_` with `save`.
+
+## MultiLabelAdaptiveClassifier
+
+A text can have several labels. Subclass of `AdaptiveClassifier`; the head uses sigmoid outputs and is trained with binary cross-entropy.
+
+```python
+from adaptive_classifier import MultiLabelAdaptiveClassifier
+
+clf = MultiLabelAdaptiveClassifier(
+    "sentence-transformers/all-MiniLM-L6-v2",
+    default_threshold=0.5,   # between 0 and 1; lowered automatically as the number of labels grows
+    min_predictions=1,       # return at least this many labels, even below the threshold
+    max_predictions=None,    # hard cap on labels returned (None = no cap)
+)
+clf.add_examples(["new GPU benchmarks", "vaccine trial results"],
+                 [["technology", "hardware"], ["health", "science"]])   # one list of labels per text
+clf.predict_multilabel("a study of AI in medicine", threshold=0.3, max_labels=5)
+```
+
+- `add_examples(texts, labels)`: `labels` holds one list of strings per text. A bare string instead of a list raises `ValueError`; a label repeated within a text counts once; a text with an empty list is skipped.
+- `predict_multilabel(text, threshold=None, max_labels=None)`: labels whose score reaches their threshold, best first. `max_labels` is a hard cap (0 returns nothing) and also bounds the `min_predictions` top-up. Per-label thresholds are adjusted for how common each label is.
+- `predict(text, k=5)`: `predict_multilabel` limited to `k` labels.
+- `forget`, `remove_examples`, `save` and `load` work as on `AdaptiveClassifier`; the settings above and the per-label thresholds are saved and restored.
+- Adding a new label retrains the head on all stored examples, so a classifier loaded from disk (which keeps only representative examples per class) retrains on those.
+
+## Strategic mode
+
+Optional defence against inputs that are edited to game the classifier. Enable it with a config where `cost_coefficients` has one entry per embedding dimension:
+
+```python
+config = {
+    "enable_strategic_mode": True,
+    "cost_function_type": "linear",          # or "separable"
+    "cost_coefficients": [0.3] * 768,        # embedding size of the encoder
+    "strategic_blend_regular_weight": 0.6,
+    "strategic_blend_strategic_weight": 0.4,
+}
+clf = AdaptiveClassifier("bert-base-uncased", config=config)
+clf.strategic_mode   # False if the coefficients were unusable; the reason is logged
+```
+
+- `predict(text)`: blends the regular and strategic predictions with the two blend weights.
+- `predict_strategic(text)`: predicts on the input as an adversary would most profitably move it.
+- `predict_robust(text)`: assumes the input may already have been moved; leans on the prototypes (`strategic_robust_proto_weight` 0.8, `strategic_robust_head_weight` 0.2).
+- `evaluate_strategic_robustness(texts, labels, gaming_levels=[0.0, 0.5, 1.0])`: accuracy when that share of inputs is gamed. `relative_robustness` is `nan` when accuracy without gaming is zero.
+
+With strategic mode off, `predict_strategic` and `predict_robust` are the same as `predict`. Strategic scoring is not part of the portable reference in `docs/deployment.md`.
