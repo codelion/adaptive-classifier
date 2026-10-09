@@ -163,6 +163,17 @@ The best split depends on how well your encoder separates your classes: an encod
 
 **Classes with few examples.** Until a class has `new_class_example_threshold` examples (default 10), the head's weight ramps up linearly from zero to `neural_weight` and the prototype takes the rest, so a brand-new class is judged almost entirely by its prototype. (Before 0.3.0 such classes used a fixed 0.3 / 0.7 split in favour of the head, and a head fitted to a handful of points could confidently outvote a correct prototype. To get a fixed split back, set both `new_class_prototype_weight` and `new_class_neural_weight`.)
 
+**Recognising a new class sooner.** The ramp is the dial between "protect the classes you already have" and "pick up a new class quickly". Lowering `new_class_example_threshold` gives the head a say earlier. Measured with MiniLM, adding classes one at a time with 4 examples each (3 seeds, 600 test texts; averages over the added classes):
+
+| `new_class_example_threshold` | ag_news: final accuracy / new-class recall / old-class loss | emotion: final accuracy / new-class recall / old-class loss |
+|---|---|---|
+| 10 (default) | 0.76 / 0.77 / 0.06 | 0.35 / 0.43 / 0.09 |
+| 5 | 0.74 / 0.85 / 0.12 | 0.35 / 0.59 / 0.14 |
+| 3 | 0.72 / 0.87 / 0.15 | 0.34 / 0.59 / 0.15 |
+| fixed 0.3 / 0.7 (pre-0.3.0 split) | 0.66 / 0.91 / 0.22 | 0.32 / 0.68 / 0.18 |
+
+Each step buys new-class recall with old-class accuracy. If a new class that is missed matters more to you than one that disturbs the others, try 5; the default favours stability. Two datasets and one encoder, so check it on your own data.
+
 **Prototype sharpness.** Prototype scores are `softmax(-distance² / prototype_temperature)` with a default temperature of 0.25. Lower values make the nearest class stand out more. Set `prototype_temperature` to `None` for the scoring used before 0.3.0, which barely separated the nearest class from the rest.
 
 **Head training.** The head is trained for at least `head_steps` optimiser steps (default 300) with a cosine-decayed `head_learning_rate` (default 0.003). That takes roughly 1-2 seconds on a small memory; lower `head_steps` (for example to 100) if you add examples very frequently. Before 0.3.0 the head got about ten steps, too few to learn even a simple XOR pattern, which prototypes alone cannot separate.
