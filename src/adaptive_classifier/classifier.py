@@ -204,6 +204,14 @@ class AdaptiveClassifier(ModelHubMixin):
                 f"labels must be strings; got {type(bad_label).__name__}. "
                 "Convert with str(label)."
             )
+        # A blank text has no content to learn from but still counts as an example of its
+        # class (and moves the prototype), and a blank label is a class with no name.
+        blank = next((i for i, t in enumerate(texts) if not t.strip()), None)
+        if blank is not None:
+            raise ValueError(f"texts must not be empty or blank (text at index {blank} is)")
+        blank = next((i for i, l in enumerate(labels) if not l.strip()), None)
+        if blank is not None:
+            raise ValueError(f"labels must not be empty or blank (label at index {blank} is)")
 
     def _extra_state(self) -> Dict[str, Any]:
         """Subclass settings that `save` stores in config.json."""
@@ -2190,6 +2198,8 @@ This model:
         Returns:
             List of selected examples
         """
+        if k <= 0:
+            return []
         if len(examples) <= k:
             return examples
             

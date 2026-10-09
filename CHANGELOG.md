@@ -13,6 +13,8 @@
 
 - `merge_classifiers`: classes taken from the other classifier were not searchable afterwards (the prototype index was not rebuilt, so the merged classifier got 0% on them); merging into an empty classifier raised; training counts were not combined, so merged classes got no head weight; stale calibration was kept; example objects were shared with the source. Merging a classifier into itself is now a no-op.
 
+- `add_examples` now rejects blank texts and blank labels (with the index of the first offender) instead of learning them; a blank text carries no information but still counted as an example of its class and moved its prototype. **Behaviour change:** code that passes empty rows now gets a `ValueError`. `select_representative_examples(k=0)` returns an empty list instead of failing inside scikit-learn.
+
 ### Added
 - Tests for strategic mode (`tests/test_strategic.py`); README and `docs/API.md` document it and `MultiLabelAdaptiveClassifier`, and the settings added in 0.3.0.
 - `benchmark` and `scripts` extras pin `datasets<4` and `huggingface-hub<1.0`, which keeps `transformers` working.
