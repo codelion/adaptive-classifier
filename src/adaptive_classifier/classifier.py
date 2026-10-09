@@ -199,6 +199,13 @@ class AdaptiveClassifier(ModelHubMixin):
                 "Convert with str(label)."
             )
 
+    def _extra_state(self) -> Dict[str, Any]:
+        """Subclass settings that `save` stores in config.json."""
+        return {}
+
+    def _restore_extra_state(self, state: Dict[str, Any]):
+        """Counterpart of `_extra_state`, called by `load`."""
+
     @staticmethod
     def _validate_k(k: int):
         if not isinstance(k, numbers.Integral) or isinstance(k, bool) or k < 0:
@@ -1048,6 +1055,7 @@ class AdaptiveClassifier(ModelHubMixin):
             'ood_radii': {label: self.memory.class_radius(label) for label in self.memory.prototypes},
             'calibration': self.calibration,
             'config': saved_settings,
+            **self._extra_state(),
             'library_name': 'adaptive-classifier'  # Tell HuggingFace Hub this requires the adaptive-classifier library
         }
 
@@ -1434,6 +1442,7 @@ class AdaptiveClassifier(ModelHubMixin):
         # Restore training history with backward compatibility
         classifier.training_history = config_dict.get('training_history', {})
         classifier.calibration = config_dict.get('calibration')
+        classifier._restore_extra_state(config_dict)
 
         # Load tensors
         tensors = load_file(model_path / "model.safetensors")

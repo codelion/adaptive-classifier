@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,7 +7,7 @@ from typing import List, Dict, Optional, Tuple, Any, Set, Union
 import logging
 from collections import defaultdict
 
-from .classifier import AdaptiveClassifier
+from .classifier import AdaptiveClassifier, _synchronized
 from .models import AdaptiveHead
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,19 @@ class MultiLabelAdaptiveHead(nn.Module):
         self.model[-1] = new_final_layer
         self.num_classes = new_num_classes
 
+    def remove_classes(self, keep_indices: list):
+        """Keep only the given output rows, in the given order."""
+        if not keep_indices:
+            raise ValueError("Cannot remove every class from the head")
+        layer = self.model[-1]
+        new_layer = nn.Linear(layer.in_features, len(keep_indices))
+        with torch.no_grad():
+            index = torch.tensor(keep_indices, dtype=torch.long, device=layer.weight.device)
+            new_layer.weight.copy_(layer.weight[index])
+            new_layer.bias.copy_(layer.bias[index])
+        self.model[-1] = new_layer.to(layer.weight.device)
+        self.num_classes = len(keep_indices)
+
 
 class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
     """
@@ -86,9 +100,17 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
         seed: int = 42,
         default_threshold: float = 0.5,
         min_predictions: int = 1,
-        max_predictions: Optional[int] = None
+        max_predictions: Optional[int] = None,
+        use_onnx: Optional[Union[bool, str]] = "auto",
+        trust_remote_code: bool = False
     ):
-        super().__init__(model_name, device, config, seed)
+        if not 0.0 <= default_threshold <= 1.0:
+            raise ValueError(f"default_threshold must be between 0 and 1; got {default_threshold!r}")
+        if min_predictions < 0:
+            raise ValueError(f"min_predictions must be >= 0; got {min_predictions!r}")
+        if max_predictions is not None and max_predictions < 1:
+            raise ValueError(f"max_predictions must be >= 1 or None; got {max_predictions!r}")
+        super().__init__(model_name, device, config, seed, use_onnx, trust_remote_code)
 
         # Multi-label specific configuration
         self.default_threshold = default_threshold
@@ -110,6 +132,29 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
             hidden_dims=hidden_dims
         ).to(self.device)
 
+    def _extra_state(self) -> Dict[str, Any]:
+        """Settings that `save` stores beside the base classifier's."""
+        return {
+            'multilabel': {
+                'default_threshold': self.default_threshold,
+                'min_predictions': self.min_predictions,
+                'max_predictions': self.max_predictions,
+                'label_thresholds': dict(self.label_thresholds),
+            }
+        }
+
+    def _restore_extra_state(self, state: Dict[str, Any]):
+        saved = (state or {}).get('multilabel') or {}
+        self.default_threshold = saved.get('default_threshold', self.default_threshold)
+        self.min_predictions = saved.get('min_predictions', self.min_predictions)
+        self.max_predictions = saved.get('max_predictions', self.max_predictions)
+        self.label_thresholds = dict(saved.get('label_thresholds', {}))
+
+    def _drop_classes(self, drop):
+        super()._drop_classes(drop)
+        for label in drop:
+            self.label_thresholds.pop(label, None)
+
     def _get_adaptive_threshold(self, num_labels: int) -> float:
         """
         Calculate adaptive threshold based on number of labels.
@@ -129,6 +174,7 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
             # For many labels (20+), use very low threshold
             return self.default_threshold * 0.2
 
+    @_synchronized
     def predict_multilabel(
         self,
         text: str,
@@ -148,6 +194,10 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
         """
         if not text:
             raise ValueError("Empty input text")
+        if max_labels is not None and (isinstance(max_labels, bool) or not isinstance(max_labels, int) or max_labels < 0):
+            raise ValueError(f"max_labels must be a non-negative integer or None; got {max_labels!r}")
+        if threshold is not None and not 0.0 <= threshold <= 1.0:
+            raise ValueError(f"threshold must be between 0 and 1; got {threshold!r}")
 
         num_labels = len(self.label_to_id)
         if num_labels == 0:
@@ -157,7 +207,8 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
         if threshold is None:
             threshold = self._get_adaptive_threshold(num_labels)
 
-        max_labels = max_labels or self.max_predictions
+        if max_labels is None:
+            max_labels = self.max_predictions
 
         with torch.no_grad():
             # Get embedding
@@ -183,14 +234,14 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
                 predictions.sort(key=lambda x: x[1], reverse=True)
 
                 # Apply max_labels limit
-                if max_labels and len(predictions) > max_labels:
+                if max_labels is not None and len(predictions) > max_labels:
                     predictions = predictions[:max_labels]
 
             else:
                 # Fallback to prototype-based prediction
                 proto_predictions = self.memory.get_nearest_prototypes(
                     embedding,
-                    k=min(num_labels, max_labels) if max_labels else num_labels
+                    k=num_labels if max_labels is None else min(num_labels, max_labels)
                 )
 
                 # Filter by threshold
@@ -226,13 +277,18 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
                 predictions.extend(additional_predictions[:self.min_predictions - len(predictions)])
                 predictions.sort(key=lambda x: x[1], reverse=True)
 
+        # max_labels is a hard cap: it also bounds the min_predictions top-up.
+        if max_labels is not None:
+            predictions = predictions[:max_labels]
         return predictions
 
+    @_synchronized
     def predict(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
         """
         Override base predict to use multi-label prediction.
         Falls back to single-label prediction if needed.
         """
+        self._validate_k(k)
         # Use multi-label prediction but limit to k results
         multilabel_preds = self.predict_multilabel(text, max_labels=k)
 
@@ -242,41 +298,47 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
             # Fallback to base prediction if no multi-label predictions
             return super().predict(text, k)
 
+    @_synchronized
     def add_examples(self, texts: List[str], labels: List[List[str]]):
         """
         Add multi-label training examples.
 
         Args:
             texts: List of input texts
-            labels: List of label lists (each text can have multiple labels)
+            labels: One list of labels per text (each text can have several).
+                A text with an empty label list is skipped.
         """
         if not texts or not labels:
             raise ValueError("Empty input lists")
         if len(texts) != len(labels):
             raise ValueError("Mismatched text and label lists")
+        for text_labels in labels:
+            # A bare string would otherwise be split into one class per character.
+            if isinstance(text_labels, (str, bytes)) or not hasattr(text_labels, '__iter__'):
+                raise ValueError(
+                    "labels must be a list of label lists, one per text; got "
+                    f"{type(text_labels).__name__} {text_labels!r} (wrap a single label as ['label'])"
+                )
 
-        # Flatten labels for single-label training approach
-        # We'll train one example per text-label pair
+        # One training example per (text, label) pair; a label repeated within a
+        # text counts once.
         flattened_texts = []
         flattened_labels = []
-
         for text, text_labels in zip(texts, labels):
-            if not text_labels:  # Skip texts with no labels
-                continue
-
-            # For multi-label, we create multiple training examples
-            # Each example represents the text with one of its labels
-            for label in text_labels:
+            for label in dict.fromkeys(text_labels):
                 flattened_texts.append(text)
                 flattened_labels.append(label)
 
         if flattened_texts:
-            # Use parent class method with flattened examples
+            # The parent validates that texts and labels are non-empty strings.
             super().add_examples(flattened_texts, flattened_labels)
+        elif not all(isinstance(t, str) for t in texts):
+            raise ValueError("texts must all be strings")
 
         # Update label-specific thresholds based on training data
         self._update_label_thresholds()
 
+    @_synchronized
     def _update_label_thresholds(self):
         """Update per-label thresholds based on training data distribution."""
         if not self.memory.examples:
@@ -306,112 +368,76 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
 
         logger.debug(f"Updated label thresholds: {self.label_thresholds}")
 
+    def _train_new_classes(self, old_head, new_classes):
+        """Retrain the head on every stored example when classes are added.
+
+        The single-label routine behind this hook uses a softmax loss, which
+        does not apply to independent per-label outputs.
+        """
+        self._train_adaptive_head()
+
     def _train_adaptive_head(self, epochs: int = 10):
-        """Train multi-label adaptive head with BCE loss."""
+        """Train the multi-label head with binary cross-entropy.
+
+        Like the single-label head, it runs at least `head_steps` optimiser
+        steps with a cosine-decayed learning rate and no early stopping; a few
+        epochs over a small memory is too little for the head to learn anything.
+        """
         if not self.memory.examples:
             return
 
-        # Prepare multi-label training data
-        all_embeddings = []
-        all_labels = []
-
-        # Create label matrix for multi-label training
-        num_classes = len(self.label_to_id)
-
-        # Collect unique texts and their labels
+        # A text's targets are every label it was stored under.
         text_to_labels = defaultdict(set)
+        text_to_embedding = {}
         for label, examples in self.memory.examples.items():
             for example in examples:
                 text_to_labels[example.text].add(label)
+                text_to_embedding.setdefault(example.text, example.embedding)
 
-        # Create training data with proper multi-label targets
-        for text, labels in text_to_labels.items():
-            # Get embedding for this text (take first occurrence)
-            embedding = None
-            for label in labels:
-                for example in self.memory.examples[label]:
-                    if example.text == text:
-                        embedding = example.embedding
-                        break
-                if embedding is not None:
-                    break
+        num_classes = len(self.label_to_id)
+        texts = sorted(text_to_labels)
+        targets = torch.zeros(len(texts), num_classes)
+        for row, text in enumerate(texts):
+            for label in text_to_labels[text]:
+                if label in self.label_to_id:
+                    targets[row, self.label_to_id[label]] = 1.0
+        embeddings = F.normalize(torch.stack([text_to_embedding[t] for t in texts]), p=2, dim=1)
+        embeddings, targets = embeddings.to(self.device), targets.to(self.device)
 
-            if embedding is not None:
-                all_embeddings.append(embedding)
+        batch_size = min(32, len(embeddings))
+        batches_per_epoch = math.ceil(len(embeddings) / batch_size)
+        total_steps = max(epochs * batches_per_epoch,
+                          int(getattr(self.config, 'head_steps', 0) or 0))
 
-                # Create multi-hot encoded label vector
-                label_vector = torch.zeros(num_classes)
-                for label in labels:
-                    if label in self.label_to_id:
-                        label_vector[self.label_to_id[label]] = 1.0
-
-                all_labels.append(label_vector)
-
-        if not all_embeddings:
-            return
-
-        all_embeddings = torch.stack(all_embeddings)
-        all_labels = torch.stack(all_labels)
-
-        # Normalize embeddings
-        all_embeddings = F.normalize(all_embeddings, p=2, dim=1)
-
-        # Create data loader
-        dataset = torch.utils.data.TensorDataset(all_embeddings, all_labels)
-        loader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=min(32, len(all_embeddings)),
-            shuffle=True,
-            generator=torch.Generator().manual_seed(42)
-        )
-
-        # Training setup
         self.adaptive_head.train()
-        criterion = nn.BCELoss()  # Binary Cross Entropy for multi-label
+        criterion = nn.BCELoss()
         optimizer = torch.optim.AdamW(
             self.adaptive_head.parameters(),
-            lr=0.001,
-            weight_decay=0.01
+            lr=getattr(self.config, 'head_learning_rate', 0.001),
+            weight_decay=0.01,
         )
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
+        generator = torch.Generator().manual_seed(42)
 
-        best_loss = float('inf')
-        patience_counter = 0
-        patience = 3
-
-        for epoch in range(epochs):
-            total_loss = 0
-            for batch_embeddings, batch_labels in loader:
-                batch_embeddings = batch_embeddings.to(self.device)
-                batch_labels = batch_labels.to(self.device)
-
+        step = 0
+        while step < total_steps:
+            order = torch.randperm(len(embeddings), generator=generator)
+            for start in range(0, len(order), batch_size):
+                index = order[start:start + batch_size]
                 optimizer.zero_grad()
-                outputs = self.adaptive_head(batch_embeddings)
-
-                loss = criterion(outputs, batch_labels)
+                loss = criterion(self.adaptive_head(embeddings[index]), targets[index])
                 loss.backward()
-
-                torch.nn.utils.clip_grad_norm_(
-                    self.adaptive_head.parameters(),
-                    max_norm=1.0
-                )
+                torch.nn.utils.clip_grad_norm_(self.adaptive_head.parameters(), max_norm=1.0)
                 optimizer.step()
-
-                total_loss += loss.item()
-
-            avg_loss = total_loss / len(loader)
-
-            # Early stopping
-            if avg_loss < best_loss:
-                best_loss = avg_loss
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= patience:
-                    logger.debug(f"Early stopping at epoch {epoch + 1}")
+                scheduler.step()
+                step += 1
+                if step >= total_steps:
                     break
 
+        self.adaptive_head.eval()
         self.train_steps += 1
 
+    @_synchronized
     def get_label_statistics(self) -> Dict[str, Any]:
         """Get statistics about label distribution and thresholds."""
         stats = super().get_example_statistics()
