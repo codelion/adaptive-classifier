@@ -34,6 +34,10 @@ Adaptive Classifier is a PyTorch-based machine learning library that revolutioni
 - **📈 Continuous Learning** - Add new examples without catastrophic forgetting
 - **🔄 Dynamic Classes** - Add new classes at runtime without retraining
 - **⏱️ Zero Downtime** - Update models in production without service interruption
+- **✅ Knows What It Doesn't Know** - Calibrated confidence, prediction sets, out-of-distribution detection and abstention
+- **🧹 Fixable** - Forget a wrong example or a whole class without retraining
+- **🎣 Active Learning & Drift** - Suggest which texts to label next and detect when traffic has shifted
+- **🔌 Easy to Adopt** - scikit-learn interface, HTTP server, async methods, and ONNX inference outside Python
 
 ### 🛡️ **Advanced Defense**
 - **🎮 Strategic Classification** - Game-theoretic defense against adversarial manipulation
