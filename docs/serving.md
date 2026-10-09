@@ -50,7 +50,7 @@ Without an API key anyone who can reach the server can change the model, and the
 
 Every classifier operation takes a lock, so one process can safely serve concurrent requests while
 learning. That means requests are processed one at a time inside a process. For more throughput run
-several **processes** (`--workers`, or several containers behind a load balancer); with a read-only
+several **processes** (for example several containers behind a load balancer); with a read-only
 server this scales cleanly. Each process has its own copy of the model, so updates only reach the
 worker that received them: run a single process if you enable updates.
 
@@ -65,7 +65,4 @@ docker build -f docker/Dockerfile -t adaptive-classifier .
 docker run --rm -p 8000:8000 -v "$PWD/my_classifier:/model:ro" adaptive-classifier
 ```
 
-The image runs as a non-root user, has a health check on `/health`, and uses CPU-only PyTorch. The
-Dockerfile has not been built or run in the environment this was written in (no Docker daemon was
-available); the application it runs is covered by the server tests, but treat the image build as
-unverified until you have run it once.
+The image runs as a non-root user, has a health check on `/health`, and uses CPU-only PyTorch. CI builds it and queries it (`scripts/docker_smoke.py`, workflow `docker.yml`) whenever the Dockerfile, `pyproject.toml` or the server change, and weekly.

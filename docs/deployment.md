@@ -116,7 +116,7 @@ The scoring is a few dozen lines of array maths. Read `model.safetensors` with a
 
 ### JavaScript / Node / browser
 
-Use `onnxruntime-node` (server) or `onnxruntime-web` (browser) for the encoder and `@huggingface/transformers` for tokenization.
+Use `onnxruntime-node` (server) or `onnxruntime-web` (browser) for the encoder and `@huggingface/tokenizers` (a small, dependency-free package) for tokenization.
 
 ```js
 import * as ort from "onnxruntime-node";
@@ -132,7 +132,14 @@ const hidden = out.last_hidden_state;   // Float32Array data, dims [1, tokens, d
 
 For the browser, check the size of `model_quantized.onnx` first: multilingual encoders carry a large vocabulary embedding and can be well over 100 MB even when quantized.
 
-The C# and JavaScript snippets above are sketches of the API calls and have **not** been run; the Python reference script is the tested artifact.
+A complete, tested Node.js port is in `examples/javascript/portable_inference.mjs` (tokenizer, safetensors reader, pooling, scoring):
+
+```bash
+cd examples/javascript && npm install
+node portable_inference.mjs ./my_classifier "text to classify"
+```
+
+`tests/test_js_example.py` checks it against `AdaptiveClassifier.predict` for both pooling modes and every scoring branch, including inputs longer than `max_length`. It uses `onnxruntime-node` when installed and falls back to `onnxruntime-web` (WASM). The C# snippet above is a sketch of the API calls and has **not** been run; the Python and JavaScript ports are the tested artifacts.
 
 ### Updating a deployed model
 

@@ -93,20 +93,33 @@ class EWC:
         
         return fisher
     
-    def ewc_loss(self, batch_size: Optional[int] = None) -> torch.Tensor:
-        """Compute EWC loss.
-        
+    def ewc_loss(
+        self,
+        batch_size: Optional[int] = None,
+        model: Optional[nn.Module] = None
+    ) -> torch.Tensor:
+        """Compute the EWC penalty.
+
         Args:
             batch_size: Batch size for normalization
-            
+            model: The model being trained. The penalty measures how far *its*
+                parameters have moved from the ones stored when this object was
+                built; with no model it uses the one given at construction, which
+                is that same model and so always gives zero. When classes have
+                been added the live model's output layer is larger; only the rows
+                that existed before are compared.
+
         Returns:
             EWC loss tensor
         """
+        live = self.model if model is None else model
         loss = 0
-        for n, p in self.model.named_parameters():
-            if p.requires_grad:
-                # Compute squared distance
-                _loss = (self.fisher_info[n] * (p - self.old_params[n]) ** 2).sum()
+        for n, p in live.named_parameters():
+            if p.requires_grad and n in self.old_params:
+                old = self.old_params[n].to(p.device)
+                fisher = self.fisher_info[n].to(p.device)
+                overlap = tuple(slice(0, size) for size in old.shape)
+                _loss = (fisher * (p[overlap] - old) ** 2).sum()
                 loss += _loss
         
         # Normalize by batch size if provided

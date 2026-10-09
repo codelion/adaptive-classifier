@@ -64,8 +64,6 @@ def main():
     ]
     
     print("\nTesting predictions:")
-    classifier.model.eval()
-    
     with torch.no_grad():
         for text in test_texts:
             predictions = classifier.predict(text)
@@ -100,8 +98,6 @@ def main():
     # Test new predictions
     print("\nTesting technical classification:")
     technical_test = "API giving null pointer exception"
-    
-    loaded_classifier.model.eval()
     
     with torch.no_grad():
         predictions = loaded_classifier.predict(technical_test)

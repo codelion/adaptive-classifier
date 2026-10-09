@@ -257,3 +257,28 @@ def test_concurrent_access(memory, example_embedding):
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+def test_strategic_prototypes_can_be_computed_and_searched():
+    """get_strategic_prototypes used to raise NameError (F was never imported)."""
+    from adaptive_classifier.strategic import LinearCostFunction
+
+    memory = PrototypeMemory(embedding_dim=4)
+    for label, axis in (("a", 0), ("b", 1)):
+        for i in range(3):
+            vector = torch.zeros(4)
+            vector[axis] = 1.0
+            memory.add_example(Example(f"{label}{i}", label, vector + 0.01 * i), label)
+
+    memory._rebuild_index()        # the classifier does this after adding examples
+
+    # Before any are computed it falls back to the ordinary prototypes.
+    assert memory.get_strategic_prototypes(torch.tensor([1.0, 0, 0, 0]), k=2)
+
+    memory.compute_strategic_prototypes(
+        LinearCostFunction(torch.full((4,), 1000.0)),         # too costly to move: the response is the input
+        lambda x: torch.softmax(x[:, :2], dim=-1),
+    )
+    assert set(memory.strategic_prototypes) == {"a", "b"}
+    ranked = memory.get_strategic_prototypes(torch.tensor([1.0, 0, 0, 0]), k=2)
+    assert [label for label, _ in ranked] == ["a", "b"]
+    assert ranked[0][1] > ranked[1][1]

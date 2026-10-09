@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.3.1
+
+### Fixed
+- `MultiLabelAdaptiveClassifier`: `forget()` and `remove_examples()` no longer crash; `load(..., use_onnx=...)` works and the multi-label settings and per-label thresholds are saved and restored; a bare-string label (which was split into one class per character) is rejected; `max_labels=0` returns nothing and `max_labels` caps the `min_predictions` top-up; the head is trained for `head_steps` steps and retrained when labels are added, instead of ~10 steps with a softmax loss that did not apply; the public methods hold the instance lock.
+
+- Strategic mode: `cost_coefficients` is validated (a dict of named features, as the README once showed, or a list of the wrong length used to disable strategic mode with a cryptic message; the reason now says what is wrong and how many entries are needed); the best response explored only the first few embedding dimensions and used unseeded randomness, so it now samples the cheapest and a random spread of dimensions with a fixed seed; `predict`, `predict_strategic` and `predict_robust` scores no longer change with `k`; `evaluate_strategic_robustness` no longer divides by zero, rejects unknown labels with `ValueError`, and is repeatable and thread-safe.
+- Strategic-mode predictions are different from 0.3.0 because of the candidate and `k` fixes.
+
+- Copying a classifier (`copy.deepcopy`, `pickle`) failed with "cannot pickle RLock" since the instance lock was added in 0.3.0; copies now get their own lock.
+- `predict_batch` disagreed with `predict` in strategic mode (it skipped the strategic blend) and for `MultiLabelAdaptiveClassifier` (it softmaxed sigmoid scores). Both now return what `predict` returns, which also fixes the server's `/predict_batch` for those classifiers.
+
+- `merge_classifiers`: classes taken from the other classifier were not searchable afterwards (the prototype index was not rebuilt, so the merged classifier got 0% on them); merging into an empty classifier raised; training counts were not combined, so merged classes got no head weight; stale calibration was kept; example objects were shared with the source. Merging a classifier into itself is now a no-op.
+
+- `add_examples` now rejects blank texts and blank labels (with the index of the first offender) instead of learning them; a blank text carries no information but still counted as an example of its class and moved its prototype. **Behaviour change:** code that passes empty rows now gets a `ValueError`. `select_representative_examples(k=0)` returns an empty list instead of failing inside scikit-learn.
+
+- `add_examples` is now all-or-nothing. An error (or Ctrl-C) while training used to leave the label map ahead of the neural head, so every later prediction raised "selected index k out of range" and every retry failed; or left the search index stale, so predictions silently returned the wrong class. Texts are encoded before any state changes, and on failure everything is restored.
+- Elastic Weight Consolidation did nothing: the penalty compared the old head with its own stored copy, so it was always zero and never reached the head being trained. It now penalises how far the live head's existing rows move. With the default strength (5.0) the effect is small: re-running the class-incremental experiment from the README (MiniLM, ag_news and emotion, 3 seeds) moved final accuracy by -0.004 and +0.016, old-class loss by -0.002 and +0.002 and new-class recall by -0.012 and 0.000, all within noise. `EWC.ewc_loss` takes the model being trained as `model=`.
+- `clear_memory()` with no labels cleared only the prototypes; the label map, training counts, calibration and neural head stayed, so `predict` kept answering from the head alone. It now empties the classifier.
+- A classifier loaded from disk kept only a few examples per class and re-averaged its prototype from them on the first `add_examples`, jerking the prototype away from where it was saved (0.32 versus 0.03 for a 30-example class). Prototypes now fold in new examples with the weight of the examples they were saved from. The neural head is still retrained from the examples held in memory.
+- Saving a classifier that was loaded from ONNX wrote the ONNX folder as `model_name`, so the copy could not be loaded once that folder was gone. It keeps the original encoder name.
+- `merge_classifiers` could deadlock when two threads merged each other; it never holds two classifiers' locks at once. It also keeps the other classifier's recorded class spread (OOD radii).
+- `add_examples` encoded every text in one forward pass, ignoring `batch_size`; large lists could run out of memory.
+- `remove_examples` given a bare string treated it as a set of characters and removed nothing; it now raises.
+- `MultiLabelAdaptiveClassifier`: an explicit `threshold` in `predict_multilabel` was ignored for every label that had a learned threshold; a saved multi-label classifier loaded through `AdaptiveClassifier.load` (or the server) came back as single-label with softmax scores; `calibrate`, `calibration_report` and `predict_set` ran but produced meaningless numbers and now raise `NotImplementedError`; `predict` lacked the `abstain_*` options; thresholds went stale after `merge_classifiers`/`remove_examples`; strategic mode, which does not apply to sigmoid outputs, is refused.
+- Server: updates, `/info` and saving no longer block the event loop (a save with ONNX export froze `/health` for seconds); a multi-label classifier is refused with a clear message instead of failing every request with 500.
+- Strategic mode: `predict_strategic` and `predict_robust` accept empty text and negative `k` that `predict` rejects; `evaluate_strategic_robustness` raised `KeyError` unless the levels included 0.0 and 1.0, and accepted levels outside [0, 1].
+- scikit-learn wrapper: `partial_fit(classes=[...])` now lists every declared class in `classes_`; labels that would become the same class name (`1` and `"1"`), `None` and `NaN` are rejected; the docs wrongly said a fitted estimator cannot be pickled.
+- `PrototypeMemory.get_strategic_prototypes` raised `NameError` (a missing import) whenever strategic prototypes existed.
+
+- `examples/basic_usage.py` crashed on a default CPU install (it called `.model.eval()` on an ONNX Runtime model). The docs no longer recommend a `--workers` flag the server does not have, say the Docker image is unverified, or omit parameters (`use_onnx`, `abstain_*`, `include_onnx`, `pooling`, ...) that exist.
+- The release workflow ran its own cut-down test step with PyPI credentials in scope. It now calls the full test workflow, only the publish job holds credentials, and the release tag must match the package version.
+
+### Added
+- Tests for strategic mode (`tests/test_strategic.py`); README and `docs/API.md` document it and `MultiLabelAdaptiveClassifier`, and the settings added in 0.3.0.
+- `benchmark` and `scripts` extras pin `datasets<4` and `huggingface-hub<1.0`, which keeps `transformers` working.
+- `examples/javascript/portable_inference.mjs`: a tested Node.js port of the portable inference, and a Docker smoke test (`scripts/docker_smoke.py`, `.github/workflows/docker.yml`) that builds the serving image and queries it.
+- README: measured guidance on tuning `new_class_example_threshold` for new-class recall.
+
 ## 0.3.0
 
 ### Added

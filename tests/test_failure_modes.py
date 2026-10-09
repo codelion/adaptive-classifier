@@ -142,10 +142,11 @@ def test_integer_labels_cannot_corrupt_a_saved_model(new_classifier, tmp_path):
     assert {l for l, _ in loaded.predict("great", k=10)} == {"1", "2"}
 
 
-def test_empty_string_text_is_allowed_and_embeds(new_classifier):
+def test_empty_string_text_is_rejected_rather_than_learned_as_a_class(new_classifier):
+    """Blank rows used to be accepted, turning every empty text into an example of its class."""
     clf = new_classifier()
-    clf.add_examples(["", "good"], ["blank", "ok"])
-    assert {l for l, _ in clf.predict("good", k=5)} == {"blank", "ok"}
+    with pytest.raises(ValueError, match="blank"):
+        clf.add_examples(["", "good"], ["blank", "ok"])
 
 
 def test_identical_text_with_conflicting_labels_stays_consistent(new_classifier):
@@ -368,3 +369,32 @@ def test_state_after_random_operations_survives_save_and_reload(new_classifier, 
     assert set(loaded.label_to_id) == set(clf.label_to_id)
     for text in ("great love", "terrible hate", "okay fine"):
         assert [l for l, _ in loaded.predict(text, k=9)] == [l for l, _ in clf.predict(text, k=9)]
+
+
+# --- blank training data ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("texts, labels, message", [
+    ([""], ["p"], "text at index 0"),
+    (["great", "   "], ["p", "p"], "text at index 1"),
+    (["great", "\n\t"], ["p", "n"], "text at index 1"),
+    (["great"], [""], "label at index 0"),
+    (["great", "bad"], ["p", "  "], "label at index 1"),
+])
+def test_blank_training_text_or_label_is_rejected_and_nothing_is_learned(new_classifier, texts, labels, message):
+    clf = new_classifier()
+    with pytest.raises(ValueError, match=message):
+        clf.add_examples(texts, labels)
+    assert clf.label_to_id == {} and clf.memory.examples == {}
+
+
+def test_a_blank_row_does_not_change_an_existing_classifier(trained):
+    before = dict(trained.get_memory_stats()["examples_per_class"])
+    with pytest.raises(ValueError):
+        trained.add_examples(["great love", ""], ["p", "p"])
+    assert trained.get_memory_stats()["examples_per_class"] == before
+
+
+def test_selecting_zero_representative_examples_returns_nothing(trained):
+    examples = trained.memory.examples["p"]
+    assert trained.select_representative_examples(examples, k=0) == []
+    assert trained.select_representative_examples([], k=0) == []

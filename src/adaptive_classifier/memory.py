@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 from typing import List, Dict, Tuple, Optional, Any
 from collections import defaultdict
@@ -32,6 +33,14 @@ class PrototypeMemory:
         # Class spread recorded when a classifier was saved. A reloaded memory
         # keeps only a few representative examples, which understate the spread.
         self.saved_radii = {}  # label -> float
+        # A reloaded memory holds only a few examples per class, but its prototypes were
+        # averaged over many more. For such classes the prototype keeps that average
+        # (prototype_base: label -> (prototype, number of examples behind it)) and folds in
+        # examples added since (post_sum / post_n) instead of re-averaging the few that
+        # were kept, which would jerk the prototype away from where it was saved.
+        self.prototype_base = {}  # label -> (tensor, int)
+        self.post_sum = {}        # label -> tensor
+        self.post_n = {}          # label -> int
         
         # Initialize FAISS index for fast similarity search
         self.index = faiss.IndexFlatL2(embedding_dim)
@@ -62,6 +71,9 @@ class PrototypeMemory:
             
         # Add new example
         self.examples[label].append(example)
+        if label in self.prototype_base:
+            self.post_sum[label] = self.post_sum[label] + example.embedding
+            self.post_n[label] += 1
         
         # Check if we need to prune examples after adding
         if len(self.examples[label]) > self.config.max_examples_per_class:
@@ -149,9 +161,13 @@ class PrototypeMemory:
         if not examples:
             return
             
-        # Compute mean of embeddings
-        embeddings = torch.stack([ex.embedding for ex in examples])
-        prototype = torch.mean(embeddings, dim=0)
+        if label in self.prototype_base:
+            base, count = self.prototype_base[label]
+            prototype = (base * count + self.post_sum[label]) / (count + self.post_n[label])
+        else:
+            # Compute mean of embeddings
+            embeddings = torch.stack([ex.embedding for ex in examples])
+            prototype = torch.mean(embeddings, dim=0)
         
         # Update prototype
         self.prototypes[label] = prototype
@@ -239,8 +255,24 @@ class PrototypeMemory:
             'updates_since_rebuild': self.updates_since_rebuild
         }
     
+    def set_prototype_base(self, label: str, count: int):
+        """Treat the current prototype of `label` as the mean of `count` examples.
+
+        Used after loading, when fewer examples than that are held in memory.
+        """
+        if label in self.prototypes and count > len(self.examples.get(label, [])):
+            self.prototype_base[label] = (self.prototypes[label].clone(), int(count))
+            self.post_sum[label] = torch.zeros_like(self.prototypes[label])
+            self.post_n[label] = 0
+
+    def _forget_base(self, label: str):
+        self.prototype_base.pop(label, None)
+        self.post_sum.pop(label, None)
+        self.post_n.pop(label, None)
+
     def remove_class(self, label: str):
         """Drop a class and everything stored for it."""
+        self._forget_base(label)
         self.examples.pop(label, None)
         self.prototypes.pop(label, None)
         self.strategic_prototypes.pop(label, None)
@@ -263,6 +295,7 @@ class PrototypeMemory:
             self.remove_class(label)
             return removed
         self.examples[label] = kept
+        self._forget_base(label)       # the prototype is recomputed from what remains
         self.prototypes[label] = torch.mean(torch.stack([ex.embedding for ex in kept]), dim=0)
         self.strategic_prototypes.pop(label, None)
         # The saved spread described the old membership.
@@ -298,7 +331,11 @@ class PrototypeMemory:
         """Clear all memory."""
         self.examples.clear()
         self.prototypes.clear()
+        self.strategic_prototypes.clear()
         self.saved_radii.clear()
+        self.prototype_base.clear()
+        self.post_sum.clear()
+        self.post_n.clear()
         self.index = faiss.IndexFlatL2(self.embedding_dim)
         self.label_to_index.clear()
         self.index_to_label.clear()

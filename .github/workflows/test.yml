@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+  # The release workflow runs the same tests before publishing.
+  workflow_call:
   schedule:
     # Weekly, so breakage on the Hugging Face Hub or in new transformers/torch
     # releases shows up without waiting for the next PR.
@@ -75,6 +77,10 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -e ".[test]"
+
+    - name: Install the Node.js example's dependencies
+      run: npm install --no-audit --no-fund
+      working-directory: examples/javascript
 
     # Everything except tests marked `integration`, run offline against the
     # models prefetched above. Tests marked `integration` run in the job below.

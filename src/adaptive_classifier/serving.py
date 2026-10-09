@@ -14,10 +14,11 @@ updates are allowed, ``POST /examples``, ``POST /forget`` and
 ``POST /remove_examples``.
 
 The classifier takes a lock around every operation, so one process is safe to
-share across requests; scale throughput with ``--workers`` (separate
-processes, each with its own copy and its own updates) rather than threads.
-Updates therefore only reach the worker that handled them. Run a single
-worker if you enable them, and pass ``--save-dir`` to persist what was learned.
+share across requests; scale throughput with several processes (for example
+containers behind a load balancer, each with its own copy and its own updates)
+rather than threads. Updates therefore only reach the process that handled
+them. Run a single process if you enable them, and pass ``--save-dir`` to
+persist what was learned.
 """
 
 import argparse
@@ -51,6 +52,11 @@ def create_app(
         max_text_chars: Longest accepted text, in characters.
         save_dir: If set, the classifier is saved there after every update.
     """
+    from .multilabel import MultiLabelAdaptiveClassifier
+    if isinstance(classifier, MultiLabelAdaptiveClassifier):
+        raise ValueError(
+            "The server does not support MultiLabelAdaptiveClassifier: its predictions and "
+            "updates use lists of labels per text, which these endpoints do not express")
     try:
         from fastapi import Depends, FastAPI, HTTPException, Request
         from fastapi.responses import JSONResponse
@@ -124,9 +130,19 @@ def create_app(
                 raise HTTPException(status_code=401, detail="Missing or invalid API key",
                                     headers={"WWW-Authenticate": "Bearer"})
 
-    def persist():
+    async def persist():
+        # Saving (with ONNX export) takes seconds; keep it off the event loop.
         if save_dir:
-            classifier.save(save_dir)
+            await asyncio.to_thread(classifier.save, save_dir)
+
+    def classes():
+        # Read under the classifier's lock: an update running in another thread rewrites the label map.
+        with classifier._lock:
+            return sorted(classifier.label_to_id)
+
+    def snapshot():
+        with classifier._lock:
+            return sorted(classifier.label_to_id), classifier.get_memory_stats(), bool(classifier.calibration)
 
     @app.get("/health")
     async def health():
@@ -134,13 +150,13 @@ def create_app(
 
     @app.get("/info")
     async def info():
-        stats = classifier.get_memory_stats()
+        class_names, stats, calibrated = await asyncio.to_thread(snapshot)
         return {
             "version": _version(),
             "model": getattr(classifier, "_model_name", None),
-            "classes": sorted(classifier.label_to_id),
+            "classes": class_names,
             "examples_per_class": stats.get("examples_per_class", {}),
-            "calibrated": bool(classifier.calibration),
+            "calibrated": calibrated,
             "updates_allowed": allow_updates,
         }
 
@@ -177,20 +193,20 @@ def create_app(
         if any(not t or len(t) > max_text_chars for t in body.texts):
             raise HTTPException(status_code=422, detail=f"Each text must be 1-{max_text_chars} characters")
         await classifier.aadd_examples(body.texts, body.labels)
-        persist()
-        return {"added": len(body.texts), "classes": sorted(classifier.label_to_id)}
+        await persist()
+        return {"added": len(body.texts), "classes": await asyncio.to_thread(classes)}
 
     @app.post("/forget", dependencies=[Depends(require_updates)])
     async def forget(body: ForgetRequest):
         await asyncio.to_thread(classifier.forget, body.labels)
-        persist()
-        return {"classes": sorted(classifier.label_to_id)}
+        await persist()
+        return {"classes": await asyncio.to_thread(classes)}
 
     @app.post("/remove_examples", dependencies=[Depends(require_updates)])
     async def remove_examples(body: RemoveRequest):
         removed = await asyncio.to_thread(classifier.remove_examples, body.texts, body.label)
-        persist()
-        return {"removed": removed, "classes": sorted(classifier.label_to_id)}
+        await persist()
+        return {"removed": removed, "classes": await asyncio.to_thread(classes)}
 
     return app
 

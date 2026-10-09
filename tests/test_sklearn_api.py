@@ -220,3 +220,51 @@ def test_underlying_classifier_features_stay_reachable(base_model, separable, tm
 def test_string_input_tag_is_declared(base_model):
     tags = est(base_model).__sklearn_tags__()
     assert tags.input_tags.string
+
+
+# --- classes declared up front and label identity ---------------------------------------------
+
+def test_partial_fit_lists_declared_classes_even_before_they_are_seen(base_model, separable):
+    e = est(base_model)
+    e.partial_fit(["a1", "a2", "b1", "b2"], ["A", "A", "B", "B"], classes=["A", "B", "Z"])
+    assert list(e.classes_) == ["A", "B", "Z"]
+    proba = e.predict_proba(["a1", "b1"])
+    assert proba.shape == (2, 3)
+    assert proba[:, 2].tolist() == [0.0, 0.0]               # nothing known about Z yet
+    assert proba.sum(axis=1).tolist() == pytest.approx([1.0, 1.0])
+    assert set(e.predict(["a1", "b1"])) <= {"A", "B"}
+
+    e.partial_fit(["c1", "c2"], ["Z", "Z"])                  # when Z arrives it is learned normally
+    assert list(e.classes_) == ["A", "B", "Z"]
+    assert e.predict(["c1"])[0] == "Z"
+
+
+@pytest.mark.parametrize("labels", [[1, "1"], [1, "1", 2], [True, "True"]])
+def test_labels_that_would_merge_into_one_class_are_rejected(base_model, separable, labels):
+    e = est(base_model)
+    texts = [f"a{i}" for i in range(len(labels))]
+    with pytest.raises(ValueError, match="both map to the class"):
+        e.fit(texts, labels)
+
+
+def test_a_clashing_label_in_a_later_partial_fit_leaves_the_estimator_unchanged(base_model, separable):
+    e = est(base_model)
+    e.partial_fit(["a1", "a2"], [1, 1])
+    with pytest.raises(ValueError, match="both map to the class"):
+        e.partial_fit(["b1"], ["1"])
+    assert list(e.classes_) == [1]
+    assert e.classifier_.memory.examples["1"].__len__() == 2
+
+
+@pytest.mark.parametrize("bad", [None, float("nan")])
+def test_none_and_nan_labels_are_rejected(base_model, separable, bad):
+    with pytest.raises(ValueError, match="None or NaN"):
+        est(base_model).fit(["a1", "b1"], ["A", bad])
+
+
+def test_a_fitted_estimator_can_be_pickled(base_model, separable):
+    import pickle
+    X, y = data(n=6)
+    e = est(base_model).fit(X, y)
+    again = pickle.loads(pickle.dumps(e))
+    assert list(again.predict(X[:3])) == list(e.predict(X[:3]))

@@ -34,6 +34,10 @@ Adaptive Classifier is a PyTorch-based machine learning library that revolutioni
 - **📈 Continuous Learning** - Add new examples without catastrophic forgetting
 - **🔄 Dynamic Classes** - Add new classes at runtime without retraining
 - **⏱️ Zero Downtime** - Update models in production without service interruption
+- **✅ Knows What It Doesn't Know** - Calibrated confidence, prediction sets, out-of-distribution detection and abstention
+- **🧹 Fixable** - Forget a wrong example or a whole class without retraining
+- **🎣 Active Learning & Drift** - Suggest which texts to label next and detect when traffic has shifted
+- **🔌 Easy to Adopt** - scikit-learn interface, HTTP server, async methods, and ONNX inference outside Python
 
 ### 🛡️ **Advanced Defense**
 - **🎮 Strategic Classification** - Game-theoretic defense against adversarial manipulation
@@ -158,6 +162,17 @@ classifier = AdaptiveClassifier(
 The best split depends on how well your encoder separates your classes: an encoder that bunches everything together produces weak prototypes and is better off leaning on the head.
 
 **Classes with few examples.** Until a class has `new_class_example_threshold` examples (default 10), the head's weight ramps up linearly from zero to `neural_weight` and the prototype takes the rest, so a brand-new class is judged almost entirely by its prototype. (Before 0.3.0 such classes used a fixed 0.3 / 0.7 split in favour of the head, and a head fitted to a handful of points could confidently outvote a correct prototype. To get a fixed split back, set both `new_class_prototype_weight` and `new_class_neural_weight`.)
+
+**Recognising a new class sooner.** The ramp is the dial between "protect the classes you already have" and "pick up a new class quickly". Lowering `new_class_example_threshold` gives the head a say earlier. Measured with MiniLM, adding classes one at a time with 4 examples each (3 seeds, 600 test texts; averages over the added classes):
+
+| `new_class_example_threshold` | ag_news: final accuracy / new-class recall / old-class loss | emotion: final accuracy / new-class recall / old-class loss |
+|---|---|---|
+| 10 (default) | 0.76 / 0.77 / 0.06 | 0.35 / 0.43 / 0.09 |
+| 5 | 0.74 / 0.85 / 0.12 | 0.35 / 0.59 / 0.14 |
+| 3 | 0.72 / 0.87 / 0.15 | 0.34 / 0.59 / 0.15 |
+| fixed 0.3 / 0.7 (pre-0.3.0 split) | 0.66 / 0.91 / 0.22 | 0.32 / 0.68 / 0.18 |
+
+Each step buys new-class recall with old-class accuracy. If a new class that is missed matters more to you than one that disturbs the others, try 5; the default favours stability. Two datasets and one encoder, so check it on your own data.
 
 **Prototype sharpness.** Prototype scores are `softmax(-distance² / prototype_temperature)` with a default temperature of 0.25. Lower values make the nearest class stand out more. Set `prototype_temperature` to `None` for the scoring used before 0.3.0, which barely separated the nearest class from the rest.
 
@@ -336,7 +351,7 @@ clf.partial_fit(["App crashes on login"], ["bug"])
 clf.classifier_.save("./model")               # the underlying AdaptiveClassifier
 ```
 
-`fit` starts over each time; `partial_fit` adds to what is already learned. A fitted estimator holds a FAISS index and can't be pickled, so save `classifier_` instead.
+`fit` starts over each time; `partial_fit` adds to what is already learned. A fitted estimator can be pickled, but that copies the whole encoder, so save `classifier_` instead.
 
 ### Calibrated Confidence and Prediction Sets
 
@@ -473,17 +488,17 @@ print(f"Label-specific thresholds: {stats['label_thresholds']}")
 config = {
     'enable_strategic_mode': True,
     'cost_function_type': 'linear',
-    'cost_coefficients': {
-        'sentiment_words': 0.5,    # Cost to change sentiment-bearing words
-        'length_change': 0.1,      # Cost to modify text length
-        'word_substitution': 0.3   # Cost to substitute words
-    },
+    # One cost per embedding dimension (384 for all-MiniLM-L6-v2, 768 for BERT-base):
+    # how expensive it is for an adversary to push that dimension upward.
+    'cost_coefficients': [0.3] * 768,
     'strategic_blend_regular_weight': 0.6,   # Weight for regular predictions
     'strategic_blend_strategic_weight': 0.4  # Weight for strategic predictions
 }
 
 classifier = AdaptiveClassifier("bert-base-uncased", config=config)
 classifier.add_examples(texts, labels)
+# If cost_coefficients has the wrong length, strategic mode is switched off and the
+# reason is logged; check classifier.strategic_mode.
 
 # Robust predictions that consider potential manipulation
 text = "This product has amazing quality features!"

@@ -176,3 +176,4 @@ scripts/benchmark_results/
 
 # Training checkpoints written by the benchmark harness
 checkpoints/
+examples/javascript/node_modules/
