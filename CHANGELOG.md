@@ -11,6 +11,8 @@
 - Copying a classifier (`copy.deepcopy`, `pickle`) failed with "cannot pickle RLock" since the instance lock was added in 0.3.0; copies now get their own lock.
 - `predict_batch` disagreed with `predict` in strategic mode (it skipped the strategic blend) and for `MultiLabelAdaptiveClassifier` (it softmaxed sigmoid scores). Both now return what `predict` returns, which also fixes the server's `/predict_batch` for those classifiers.
 
+- `merge_classifiers`: classes taken from the other classifier were not searchable afterwards (the prototype index was not rebuilt, so the merged classifier got 0% on them); merging into an empty classifier raised; training counts were not combined, so merged classes got no head weight; stale calibration was kept; example objects were shared with the source. Merging a classifier into itself is now a no-op.
+
 ### Added
 - Tests for strategic mode (`tests/test_strategic.py`); README and `docs/API.md` document it and `MultiLabelAdaptiveClassifier`, and the settings added in 0.3.0.
 - `benchmark` and `scripts` extras pin `datasets<4` and `huggingface-hub<1.0`, which keeps `transformers` working.

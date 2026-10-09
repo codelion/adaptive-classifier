@@ -2065,32 +2065,54 @@ This model:
             self.forget(known)
 
     @_synchronized
+    @_synchronized
     def merge_classifiers(self, other: 'AdaptiveClassifier') -> 'AdaptiveClassifier':
-        """Merge another classifier into this one."""
-        # Verify compatibility
+        """Merge another classifier into this one and return this one.
+
+        The other classifier's examples (copied, so it is left untouched) and
+        training counts are added, and the head is retrained on the combined
+        memory. Both must use the same encoder embedding size. A classifier
+        loaded from disk holds only a few representative examples per class,
+        so merging from one contributes only those.
+        """
+        if other is self:
+            return self
         if self.embedding_dim != other.embedding_dim:
             raise ValueError("Classifiers have different embedding dimensions")
-            
-        # Merge label mappings
-        next_idx = max(self.id_to_label.keys()) + 1
-        for label in other.label_to_id:
+
+        with other._lock:
+            incoming = {label: [copy.copy(ex) for ex in examples]
+                        for label, examples in other.memory.examples.items()}
+            incoming_history = dict(other.training_history)
+            incoming_labels = list(other.label_to_id)
+
+        if self.calibration:
+            logger.warning("Discarding confidence calibration: the set of classes changed")
+            self.calibration = None
+
+        next_idx = max(self.id_to_label, default=-1) + 1
+        for label in incoming_labels:
             if label not in self.label_to_id:
                 self.label_to_id[label] = next_idx
                 self.id_to_label[next_idx] = label
                 next_idx += 1
-        
-        # Merge examples and update prototypes
-        for label, examples in other.memory.examples.items():
+
+        for label, examples in incoming.items():
             for example in examples:
                 self.memory.add_example(example, label)
-        
-        # Retrain adaptive head
-        if self.adaptive_head is not None:
+        for label, count in incoming_history.items():
+            self.training_history[label] = self.training_history.get(label, 0) + count
+
+        # add_example only rebuilds the search index every few updates; searches
+        # would otherwise miss the new classes.
+        self.memory._rebuild_index()
+
+        if self.memory.examples and self.label_to_id:
             self._initialize_adaptive_head()
             self._train_adaptive_head()
-        
+
         return self
-    
+
     def _train_adaptive_head(self, epochs: int = 10):
         """Train the adaptive head on every stored example.
 
