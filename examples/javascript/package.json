@@ -1,0 +1,13 @@
+{
+  "name": "adaptive-classifier-portable-inference",
+  "private": true,
+  "type": "module",
+  "description": "Run a saved AdaptiveClassifier from Node.js with no Python.",
+  "dependencies": {
+    "@huggingface/tokenizers": "^0.2.0"
+  },
+  "optionalDependencies": {
+    "onnxruntime-node": "^1.22.0",
+    "onnxruntime-web": "^1.22.0"
+  }
+}

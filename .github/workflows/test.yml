@@ -129,3 +129,26 @@ jobs:
       if: always()
       run: |
         echo "Integration tests completed. Check logs above for detailed results."
+  docker:
+    # Builds the serving image and queries it, so the Dockerfile cannot rot
+    # unnoticed. Needs no Hugging Face access: the model is a tiny local encoder.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: pip
+
+    - name: Build image
+      run: docker build -f docker/Dockerfile -t adaptive-classifier .
+
+    - name: Install library (to create a model to serve)
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .
+
+    - name: Serve and query
+      run: python scripts/docker_smoke.py adaptive-classifier
