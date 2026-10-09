@@ -299,6 +299,14 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
             return super().predict(text, k)
 
     @_synchronized
+    def predict_batch(self, texts: List[str], k: int = 5, batch_size: int = 32) -> List[List[Tuple[str, float]]]:
+        """`predict` for each text. (The single-label batch path softmaxes the scores, which is wrong for sigmoid outputs.)"""
+        if not texts:
+            raise ValueError("Empty input batch")
+        self._validate_k(k)
+        return [self.predict(text, k) for text in texts]
+
+    @_synchronized
     def add_examples(self, texts: List[str], labels: List[List[str]]):
         """
         Add multi-label training examples.

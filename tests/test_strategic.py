@@ -313,3 +313,11 @@ def test_strategic_predictions_survive_concurrent_updates(trained, data):
         for t in threads:
             t.join()
     assert not errors, errors[0]
+
+
+def test_predict_batch_agrees_with_predict(trained):
+    clf, texts, _ = trained()
+    for text, batch in zip(texts[::6], clf.predict_batch(texts[::6], k=3)):
+        single = clf.predict(text, k=3)
+        assert [l for l, _ in batch] == [l for l, _ in single]
+        assert all(b == pytest.approx(s, abs=1e-5) for (_, b), (_, s) in zip(batch, single))

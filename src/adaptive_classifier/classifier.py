@@ -77,6 +77,12 @@ class AdaptiveClassifier(ModelHubMixin):
                 lock = self.__dict__.setdefault('_instance_lock', threading.RLock())
         return lock
 
+    def __getstate__(self):
+        # A lock cannot be copied or pickled; a copy gets its own, created on first use.
+        state = self.__dict__.copy()
+        state.pop('_instance_lock', None)
+        return state
+
     def __init__(
         self,
         model_name: str,
@@ -1966,6 +1972,11 @@ This model:
         if not texts:
             raise ValueError("Empty input batch")
         self._validate_k(k)
+
+        if self.strategic_mode:
+            # The strategic blend is worked out per text; batching the embeddings
+            # would skip it and return different answers from `predict`.
+            return [self.predict(text, k) for text in texts]
 
         all_predictions = []
         

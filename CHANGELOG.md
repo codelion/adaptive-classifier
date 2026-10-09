@@ -8,6 +8,9 @@
 - Strategic mode: `cost_coefficients` is validated (a dict of named features, as the README once showed, or a list of the wrong length used to disable strategic mode with a cryptic message; the reason now says what is wrong and how many entries are needed); the best response explored only the first few embedding dimensions and used unseeded randomness, so it now samples the cheapest and a random spread of dimensions with a fixed seed; `predict`, `predict_strategic` and `predict_robust` scores no longer change with `k`; `evaluate_strategic_robustness` no longer divides by zero, rejects unknown labels with `ValueError`, and is repeatable and thread-safe.
 - Strategic-mode predictions are different from 0.3.0 because of the candidate and `k` fixes.
 
+- Copying a classifier (`copy.deepcopy`, `pickle`) failed with "cannot pickle RLock" since the instance lock was added in 0.3.0; copies now get their own lock.
+- `predict_batch` disagreed with `predict` in strategic mode (it skipped the strategic blend) and for `MultiLabelAdaptiveClassifier` (it softmaxed sigmoid scores). Both now return what `predict` returns, which also fixes the server's `/predict_batch` for those classifiers.
+
 ### Added
 - Tests for strategic mode (`tests/test_strategic.py`); README and `docs/API.md` document it and `MultiLabelAdaptiveClassifier`, and the settings added in 0.3.0.
 - `benchmark` and `scripts` extras pin `datasets<4` and `huggingface-hub<1.0`, which keeps `transformers` working.

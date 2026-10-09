@@ -177,3 +177,27 @@ def test_many_concurrent_async_predictions_all_complete(clf):
         return await asyncio.gather(*[clf.apredict(f"tr{i % 3}_{i % 5}") for i in range(40)])
     results = asyncio.run(go())
     assert len(results) == 40 and all(r for r in results)
+
+
+# --- the lock must not stop a classifier being copied -----------------------------------------
+
+def test_a_classifier_can_be_deep_copied_and_the_copy_is_independent(clf, data):
+    import copy
+
+    twin = copy.deepcopy(clf)
+    assert twin._lock is not clf._lock
+    text = next(iter(data.store))
+    assert twin.predict(text, k=3) == clf.predict(text, k=3)
+
+    new_x, _ = data.classes(8, n_classes=1, seed=7, prefix="n")
+    twin.add_examples(new_x, ["extra"] * len(new_x))
+    assert "extra" in twin.label_to_id and "extra" not in clf.label_to_id
+
+
+def test_a_classifier_survives_a_pickle_round_trip(clf, data):
+    import pickle
+
+    restored = pickle.loads(pickle.dumps(clf))
+    text = next(iter(data.store))
+    assert restored.predict(text, k=3) == clf.predict(text, k=3)
+    restored.add_examples([text], ["C0"])             # and still works (has its own lock)

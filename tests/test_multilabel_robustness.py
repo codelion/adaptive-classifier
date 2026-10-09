@@ -255,3 +255,13 @@ def test_predicting_while_labels_are_added_and_forgotten_does_not_crash(data, ma
         for t in threads:
             t.join()
     assert not errors, errors[0]
+
+
+def test_predict_batch_agrees_with_predict(data, make):
+    train_x, train_y = data.sample([("a",), ("b",), ("a", "b")], 8, seed=1)
+    clf = make()
+    clf.add_examples(train_x, train_y)
+    batch = clf.predict_batch(train_x[::5], k=3)
+    assert batch == [clf.predict(text, k=3) for text in train_x[::5]]
+    with pytest.raises(ValueError):
+        clf.predict_batch([])
