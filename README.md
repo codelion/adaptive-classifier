@@ -351,7 +351,7 @@ clf.partial_fit(["App crashes on login"], ["bug"])
 clf.classifier_.save("./model")               # the underlying AdaptiveClassifier
 ```
 
-`fit` starts over each time; `partial_fit` adds to what is already learned. A fitted estimator holds a FAISS index and can't be pickled, so save `classifier_` instead.
+`fit` starts over each time; `partial_fit` adds to what is already learned. A fitted estimator can be pickled, but that copies the whole encoder, so save `classifier_` instead.
 
 ### Calibrated Confidence and Prediction Sets
 

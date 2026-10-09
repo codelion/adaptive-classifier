@@ -110,6 +110,10 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
             raise ValueError(f"min_predictions must be >= 0; got {min_predictions!r}")
         if max_predictions is not None and max_predictions < 1:
             raise ValueError(f"max_predictions must be >= 1 or None; got {max_predictions!r}")
+        if (config or {}).get('enable_strategic_mode'):
+            raise ValueError(
+                "Strategic mode is not supported by MultiLabelAdaptiveClassifier; "
+                "use AdaptiveClassifier for it")
         super().__init__(model_name, device, config, seed, use_onnx, trust_remote_code)
 
         # Multi-label specific configuration
@@ -203,7 +207,9 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
         if num_labels == 0:
             return []
 
-        # Use adaptive threshold if not specified
+        # An explicit threshold applies to every label; otherwise each label uses the
+        # threshold learned for it (falling back to the adaptive one).
+        explicit_threshold = threshold is not None
         if threshold is None:
             threshold = self._get_adaptive_threshold(num_labels)
 
@@ -226,7 +232,7 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
                     if i < len(self.id_to_label):
                         label = self.id_to_label[i]
                         # Use label-specific threshold if available
-                        label_threshold = self.label_thresholds.get(label, threshold)
+                        label_threshold = threshold if explicit_threshold else self.label_thresholds.get(label, threshold)
                         if prob.item() >= label_threshold:
                             predictions.append((label, prob.item()))
 
@@ -283,20 +289,33 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
         return predictions
 
     @_synchronized
-    def predict(self, text: str, k: int = 5) -> List[Tuple[str, float]]:
-        """
-        Override base predict to use multi-label prediction.
-        Falls back to single-label prediction if needed.
+    def predict(
+        self,
+        text: str,
+        k: int = 5,
+        abstain_below: Optional[float] = None,
+        abstain_ood: bool = False,
+    ) -> List[Tuple[str, float]]:
+        """The labels `predict_multilabel` picks, at most `k` of them.
+
+        Falls back to the single-label prediction when no label clears its
+        threshold and `min_predictions` is 0. An empty list means the classifier
+        abstained: the best score is below `abstain_below`, or the text is out of
+        distribution (`abstain_ood`).
         """
         self._validate_k(k)
-        # Use multi-label prediction but limit to k results
+        if abstain_ood and self.is_ood(text):
+            return []
         multilabel_preds = self.predict_multilabel(text, max_labels=k)
 
         if multilabel_preds:
-            return multilabel_preds[:k]
+            predictions = multilabel_preds[:k]
         else:
             # Fallback to base prediction if no multi-label predictions
-            return super().predict(text, k)
+            predictions = super().predict(text, k)
+        if abstain_below is not None and (not predictions or predictions[0][1] < abstain_below):
+            return []
+        return predictions
 
     @_synchronized
     def predict_batch(self, texts: List[str], k: int = 5, batch_size: int = 32) -> List[List[Tuple[str, float]]]:
@@ -322,7 +341,7 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
             raise ValueError("Mismatched text and label lists")
         for text_labels in labels:
             # A bare string would otherwise be split into one class per character.
-            if isinstance(text_labels, (str, bytes)) or not hasattr(text_labels, '__iter__'):
+            if not isinstance(text_labels, (list, tuple, set, frozenset)):
                 raise ValueError(
                     "labels must be a list of label lists, one per text; got "
                     f"{type(text_labels).__name__} {text_labels!r} (wrap a single label as ['label'])"
@@ -444,6 +463,32 @@ class MultiLabelAdaptiveClassifier(AdaptiveClassifier):
 
         self.adaptive_head.eval()
         self.train_steps += 1
+
+    def merge_classifiers(self, other):
+        # Not synchronized: the base class never holds two classifiers' locks at once.
+        merged = super().merge_classifiers(other)
+        self._update_label_thresholds()
+        return merged
+
+    @_synchronized
+    def remove_examples(self, texts, label=None, retrain=True):
+        removed = super().remove_examples(texts, label=label, retrain=retrain)
+        self._update_label_thresholds()
+        return removed
+
+    @_synchronized
+    def clear_memory(self, labels=None):
+        super().clear_memory(labels)
+        if labels is None:
+            self.label_thresholds = {}
+
+    def calibrate(self, *args, **kwargs):
+        raise NotImplementedError(
+            "Confidence calibration assumes one label per text and is not available "
+            "for MultiLabelAdaptiveClassifier")
+
+    calibration_report = calibrate
+    predict_set = calibrate
 
     @_synchronized
     def get_label_statistics(self) -> Dict[str, Any]:

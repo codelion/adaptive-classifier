@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Any, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
 from abc import ABC, abstractmethod
 import logging
 
@@ -299,7 +299,7 @@ class StrategicEvaluator:
         classifier,
         test_embeddings: torch.Tensor,
         test_labels: torch.Tensor,
-        gaming_levels: List[float] = [0.0, 0.5, 1.0]
+        gaming_levels: Sequence[float] = (0.0, 0.5, 1.0)
     ) -> Dict[str, float]:
         """Evaluate classifier robustness under strategic behavior.
         
@@ -314,7 +314,8 @@ class StrategicEvaluator:
         """
         results = {}
         
-        for level in gaming_levels:
+        # The ungamed and fully gamed baselines are what the robustness scores compare.
+        for level in sorted(set(gaming_levels) | {0.0, 1.0}):
             # Simulate strategic behavior at this level
             strategic_embeddings = self._simulate_strategic_behavior(
                 test_embeddings, classifier, level

@@ -265,3 +265,82 @@ def test_predict_batch_agrees_with_predict(data, make):
     assert batch == [clf.predict(text, k=3) for text in train_x[::5]]
     with pytest.raises(ValueError):
         clf.predict_batch([])
+
+
+# --- thresholds, loading, unsupported combinations ---------------------------------------------------
+
+def test_an_explicit_threshold_applies_to_every_label(data, make):
+    train_x, train_y = data.sample([("a",), ("b",), ("c",)], 8, seed=1)
+    clf = make(min_predictions=0)
+    clf.add_examples(train_x, train_y)
+    assert _predicted(clf, train_x[0], threshold=0.0) == {"a", "b", "c"}       # nothing is filtered out
+    assert _predicted(clf, train_x[0], threshold=1.0) == set()                  # sigmoid never reaches 1.0
+    low = _predicted(clf, train_x[0], threshold=0.001)
+    high = _predicted(clf, train_x[0], threshold=0.9)
+    assert high <= low
+
+
+def test_without_a_threshold_the_learned_per_label_ones_are_used(data, make):
+    train_x, train_y = data.sample([("a",), ("b",), ("c",)], 8, seed=1)
+    clf = make()
+    clf.add_examples(train_x, train_y)
+    clf.label_thresholds["b"] = 0.0
+    assert "b" in _predicted(clf, train_x[0])
+
+
+def test_the_base_class_loader_returns_a_multilabel_classifier(data, make, tmp_path):
+    from adaptive_classifier import AdaptiveClassifier
+
+    train_x, train_y = data.sample([("a",), ("b",), ("a", "b")], 8, seed=1)
+    clf = make(default_threshold=0.45)
+    clf.add_examples(train_x, train_y)
+    clf.save(str(tmp_path), include_onnx=False)
+
+    loaded = AdaptiveClassifier.load(str(tmp_path), device="cpu", use_onnx=False)
+
+    assert isinstance(loaded, MultiLabelAdaptiveClassifier)
+    assert loaded.default_threshold == 0.45
+    for text in train_x[::5]:
+        assert dict(loaded.predict_multilabel(text)).keys() == dict(clf.predict_multilabel(text)).keys()
+
+
+def test_predict_accepts_the_abstain_options_of_the_base_class(data, make):
+    train_x, train_y = data.sample([("a",), ("b",)], 8, seed=1)
+    clf = make()
+    clf.add_examples(train_x, train_y)
+    assert clf.predict(train_x[0], abstain_below=0.0)
+    assert clf.predict(train_x[0], abstain_below=1.1) == []
+    far = "far_away"
+    data.store[far] = -torch.ones(32) / 32 ** 0.5
+    assert clf.predict(far, abstain_ood=True) == []
+
+
+@pytest.mark.parametrize("method", ["calibrate", "calibration_report", "predict_set"])
+def test_confidence_calibration_is_refused_rather_than_silently_wrong(data, make, method):
+    clf = make()
+    with pytest.raises(NotImplementedError, match="one label per text"):
+        getattr(clf, method)(["x"], ["a"])
+
+
+def test_strategic_mode_is_refused_for_multilabel(make):
+    with pytest.raises(ValueError, match="not supported"):
+        make(config={"enable_strategic_mode": True, "cost_coefficients": [0.1] * 32})
+
+
+def test_labels_given_as_a_dict_are_rejected(make):
+    with pytest.raises(ValueError, match="list of label lists"):
+        make().add_examples(["great love"], [{"a": 1}])
+
+
+def test_thresholds_follow_merges_and_removals(data, make):
+    a_x, a_y = data.sample([("a",)], 8, seed=1)
+    b_x, b_y = data.sample([("b",), ("c",)], 8, seed=2, prefix="o")
+    one, other = make(), make()
+    one.add_examples(a_x, a_y)
+    other.add_examples(b_x, b_y)
+    one.merge_classifiers(other)
+    assert set(one.label_thresholds) == {"a", "b", "c"}
+
+    c_texts = [t for t, l in zip(b_x, b_y) if l == ["c"]]
+    one.remove_examples(c_texts)
+    assert set(one.label_thresholds) == {"a", "b"}

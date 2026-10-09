@@ -15,6 +15,18 @@
 
 - `add_examples` now rejects blank texts and blank labels (with the index of the first offender) instead of learning them; a blank text carries no information but still counted as an example of its class and moved its prototype. **Behaviour change:** code that passes empty rows now gets a `ValueError`. `select_representative_examples(k=0)` returns an empty list instead of failing inside scikit-learn.
 
+- `add_examples` is now all-or-nothing. An error (or Ctrl-C) while training used to leave the label map ahead of the neural head, so every later prediction raised "selected index k out of range" and every retry failed; or left the search index stale, so predictions silently returned the wrong class. Texts are encoded before any state changes, and on failure everything is restored.
+- Elastic Weight Consolidation did nothing: the penalty compared the old head with its own stored copy, so it was always zero and never reached the head being trained. It now penalises how far the live head's existing rows move. **This changes class-incremental results.**
+- `clear_memory()` with no labels cleared only the prototypes; the label map, training counts, calibration and neural head stayed, so `predict` kept answering from the head alone. It now empties the classifier.
+- A classifier loaded from disk kept only a few examples per class and re-averaged its prototype from them on the first `add_examples`, jerking the prototype away from where it was saved (0.32 versus 0.03 for a 30-example class). Prototypes now fold in new examples with the weight of the examples they were saved from. The neural head is still retrained from the examples held in memory.
+- Saving a classifier that was loaded from ONNX wrote the ONNX folder as `model_name`, so the copy could not be loaded once that folder was gone. It keeps the original encoder name.
+- `merge_classifiers` could deadlock when two threads merged each other; it never holds two classifiers' locks at once. It also keeps the other classifier's recorded class spread (OOD radii).
+- `add_examples` encoded every text in one forward pass, ignoring `batch_size`; large lists could run out of memory.
+- `remove_examples` given a bare string treated it as a set of characters and removed nothing; it now raises.
+- `MultiLabelAdaptiveClassifier`: an explicit `threshold` in `predict_multilabel` was ignored for every label that had a learned threshold; a saved multi-label classifier loaded through `AdaptiveClassifier.load` (or the server) came back as single-label with softmax scores; `calibrate`, `calibration_report` and `predict_set` ran but produced meaningless numbers and now raise `NotImplementedError`; `predict` lacked the `abstain_*` options; thresholds went stale after `merge_classifiers`/`remove_examples`; strategic mode, which does not apply to sigmoid outputs, is refused.
+- Server: updates, `/info` and saving no longer block the event loop (a save with ONNX export froze `/health` for seconds); a multi-label classifier is refused with a clear message instead of failing every request with 500.
+- Strategic mode: `predict_strategic` and `predict_robust` accept empty text and negative `k` that `predict` rejects; `evaluate_strategic_robustness` raised `KeyError` unless the levels included 0.0 and 1.0, and accepted levels outside [0, 1].
+- scikit-learn wrapper: `partial_fit(classes=[...])` now lists every declared class in `classes_`; labels that would become the same class name (`1` and `"1"`), `None` and `NaN` are rejected; the docs wrongly said a fitted estimator cannot be pickled.
 - `PrototypeMemory.get_strategic_prototypes` raised `NameError` (a missing import) whenever strategic prototypes existed.
 
 ### Added

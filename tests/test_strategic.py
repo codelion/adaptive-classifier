@@ -321,3 +321,35 @@ def test_predict_batch_agrees_with_predict(trained):
         single = clf.predict(text, k=3)
         assert [l for l, _ in batch] == [l for l, _ in single]
         assert all(b == pytest.approx(s, abs=1e-5) for (_, b), (_, s) in zip(batch, single))
+
+
+# --- input checks on the strategic entry points ----------------------------------------------------
+
+@pytest.mark.parametrize("method", ["predict_strategic", "predict_robust"])
+def test_strategic_entry_points_validate_input_like_predict(trained, method):
+    clf, texts, _ = trained()
+    with pytest.raises(ValueError):
+        getattr(clf, method)("")
+    with pytest.raises(ValueError):
+        getattr(clf, method)(texts[0], k=-1)
+    with pytest.raises(ValueError):
+        getattr(clf, method)(texts[0], k="x")
+    assert getattr(clf, method)(texts[0], k=0) == []
+
+
+@pytest.mark.parametrize("levels", [[0.5], [0.25, 0.75], (0.0, 1.0), [0.5, 0.5]])
+def test_robustness_evaluation_always_includes_the_baselines(trained, data, levels):
+    clf, _, _ = trained()
+    texts, labels = data.classes(4, 3, seed=9, prefix="e")
+    report = clf.evaluate_strategic_robustness(texts, labels, gaming_levels=levels)
+    assert {"accuracy_gaming_0.0", "accuracy_gaming_1.0", "robustness_score"} <= set(report)
+    for level in levels:
+        assert f"accuracy_gaming_{float(level)}" in report
+
+
+@pytest.mark.parametrize("levels", [[], [-0.1], [1.5], ["half"], [None], [True]])
+def test_robustness_evaluation_rejects_bad_levels(trained, data, levels):
+    clf, _, _ = trained()
+    texts, labels = data.classes(4, 3, seed=9, prefix="e")
+    with pytest.raises(ValueError, match="gaming_levels"):
+        clf.evaluate_strategic_robustness(texts, labels, gaming_levels=levels)

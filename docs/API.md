@@ -426,7 +426,7 @@ scikit-learn estimator wrapping `AdaptiveClassifier`. `X` is a 1-D sequence of s
 | `classes_` | Sorted labels seen so far |
 | `classifier_` | The underlying fitted `AdaptiveClassifier` (`save`, `push_to_hub`, `forget`, `remove_examples`, `is_ood`, ...) |
 
-Hyperparameters such as `prototype_weight` go inside `config`, so grid searches take `{"config": [{...}, {...}]}`. Fitted estimators cannot be pickled (they hold a FAISS index); persist `classifier_` with `save`.
+Hyperparameters such as `prototype_weight` go inside `config`, so grid searches take `{"config": [{...}, {...}]}`. Fitted estimators can be pickled, but that copies the whole encoder; persist `classifier_` with `save` instead. `partial_fit(X, y, classes=[...])` lists every declared class in `classes_` even before an example of it has been seen, and labels that would become the same class name (`1` and `"1"`), `None` and `NaN` are rejected.
 
 ## MultiLabelAdaptiveClassifier
 

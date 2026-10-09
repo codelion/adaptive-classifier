@@ -44,8 +44,8 @@ class SklearnAdaptiveClassifier(ClassifierMixin, BaseEstimator):
     -----
     `fit` starts from scratch each time (it reloads the encoder, so
     cross-validation pays that cost per fold). `partial_fit` adds to what is
-    already learned. A fitted estimator holds a FAISS index and cannot be
-    pickled; persist `classifier_` with `classifier_.save(...)` instead.
+    already learned. A fitted estimator can be pickled, but that copies the
+    whole encoder; persist `classifier_` with `classifier_.save(...)` instead.
     """
 
     def __init__(
@@ -117,12 +117,28 @@ class SklearnAdaptiveClassifier(ClassifierMixin, BaseEstimator):
     def _refresh_classes(self):
         # The wrapped classifier keys everything by str(label); keep the
         # caller's original label objects so predict returns what was passed in.
-        originals = list(self._original_labels.values())
+        # Classes declared through partial_fit(classes=...) are listed even
+        # before an example of them has been seen (scikit-learn's contract).
+        originals = list({**self._declared_labels, **self._original_labels}.values())
         try:
             ordered = sorted(originals)
         except TypeError:  # mixed label types
             ordered = sorted(originals, key=str)
         self.classes_ = np.array(ordered)
+
+    def _register_labels(self, labels: List[Any], known: Dict[str, Any]):
+        """Check labels can be told apart once turned into strings, and record them in `known`."""
+        for label in labels:
+            if label is None or (isinstance(label, float) and label != label):
+                raise ValueError("y must not contain None or NaN labels")
+            key = str(label)
+            previous = known.get(key, label)
+            if (type(previous), previous) != (type(label), label):
+                raise ValueError(
+                    f"labels {previous!r} and {label!r} are different but both map to the class "
+                    f"{key!r}; the classifier identifies classes by their string form"
+                )
+            known[key] = label
 
     # --- fitting -------------------------------------------------------------------
 
@@ -130,8 +146,11 @@ class SklearnAdaptiveClassifier(ClassifierMixin, BaseEstimator):
         """Fit from scratch on texts `X` and labels `y`."""
         texts = self._as_texts(X)
         labels = self._as_labels(y, len(texts))
+        known: Dict[str, Any] = {}
+        self._register_labels(labels, known)
         self.classifier_ = self._new_classifier()
         self._original_labels = {}
+        self._declared_labels = {}
         self._add(texts, labels)
         return self
 
@@ -143,20 +162,27 @@ class SklearnAdaptiveClassifier(ClassifierMixin, BaseEstimator):
         """
         texts = self._as_texts(X)
         labels = self._as_labels(y, len(texts))
+        declared: Dict[str, Any] = {}
         if classes is not None:
-            unexpected = set(labels) - set(np.asarray(classes, dtype=object).tolist())
+            declared_list = np.asarray(classes, dtype=object).tolist()
+            self._register_labels(declared_list, declared)
+            unexpected = set(labels) - set(declared_list)
             if unexpected:
                 raise ValueError(f"y contains labels not in classes: {sorted(map(str, unexpected))}")
         if not hasattr(self, "classifier_"):
             self.classifier_ = self._new_classifier()
             self._original_labels = {}
+            self._declared_labels = {}
+        self._declared_labels.update(declared)
         self._add(texts, labels)
         return self
 
     def _add(self, texts: List[str], labels: List[Any]):
-        for label in labels:
-            self._original_labels.setdefault(str(label), label)
+        # Validate against everything known so far before changing anything.
+        known = {**self._declared_labels, **self._original_labels}
+        self._register_labels(labels, known)
         self.classifier_.add_examples(texts, [str(label) for label in labels])
+        self._original_labels.update({str(label): label for label in labels})
         self._refresh_classes()
 
     # --- prediction ----------------------------------------------------------------

@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from transformers import AutoModel, AutoTokenizer
-from typing import List, Dict, Optional, Tuple, Any, Set, Union
+from typing import Sequence, List, Dict, Optional, Tuple, Any, Set, Union
 import logging
 import asyncio
 import copy
@@ -213,6 +213,10 @@ class AdaptiveClassifier(ModelHubMixin):
         if blank is not None:
             raise ValueError(f"labels must not be empty or blank (label at index {blank} is)")
 
+    def _base_model_name(self) -> str:
+        """The encoder this classifier was built on (not the folder an ONNX copy was loaded from)."""
+        return getattr(self, '_model_name', None) or self.model.config._name_or_path
+
     def _extra_state(self) -> Dict[str, Any]:
         """Subclass settings that `save` stores in config.json."""
         return {}
@@ -234,6 +238,60 @@ class AdaptiveClassifier(ModelHubMixin):
             raise ValueError("Mismatched text and label lists")
         self._validate_training_inputs(texts, labels)
 
+        # Encode first: the usual failures (tokenizer, encoder, memory) then happen before any
+        # state has changed. If anything fails later, every structure is put back as it was.
+        embeddings = self._get_embeddings(texts)
+        snapshot = self._snapshot()
+        try:
+            self._add_examples_unchecked(texts, labels, embeddings)
+        except BaseException:
+            self._restore(snapshot)
+            raise
+
+    def _snapshot(self) -> Dict[str, Any]:
+        memory = self.memory
+        return {
+            'label_to_id': dict(self.label_to_id),
+            'id_to_label': dict(self.id_to_label),
+            'training_history': dict(self.training_history),
+            'train_steps': self.train_steps,
+            'calibration': self.calibration,
+            'head': copy.deepcopy(self.adaptive_head),
+            'examples': {label: list(items) for label, items in memory.examples.items()},
+            'prototypes': {label: proto.clone() for label, proto in memory.prototypes.items()},
+            'saved_radii': dict(memory.saved_radii),
+            'prototype_base': dict(memory.prototype_base),
+            'post_sum': {label: v.clone() for label, v in memory.post_sum.items()},
+            'post_n': dict(memory.post_n),
+            'updates_since_rebuild': memory.updates_since_rebuild,
+            'just_rebuilt': getattr(memory, 'just_rebuilt', False),
+        }
+
+    def _restore(self, snapshot: Dict[str, Any]):
+        memory = self.memory
+        self.label_to_id = snapshot['label_to_id']
+        self.id_to_label = snapshot['id_to_label']
+        self.training_history = snapshot['training_history']
+        self.train_steps = snapshot['train_steps']
+        self.calibration = snapshot['calibration']
+        self.adaptive_head = snapshot['head']
+        memory.examples.clear()
+        memory.examples.update(snapshot['examples'])
+        memory.prototypes.clear()
+        memory.prototypes.update(snapshot['prototypes'])
+        memory.saved_radii.clear()
+        memory.saved_radii.update(snapshot['saved_radii'])
+        memory.prototype_base.clear()
+        memory.prototype_base.update(snapshot['prototype_base'])
+        memory.post_sum.clear()
+        memory.post_sum.update(snapshot['post_sum'])
+        memory.post_n.clear()
+        memory.post_n.update(snapshot['post_n'])
+        memory.updates_since_rebuild = snapshot['updates_since_rebuild']
+        memory.just_rebuilt = snapshot['just_rebuilt']
+        memory._rebuild_index()
+
+    def _add_examples_unchecked(self, texts: List[str], labels: List[str], embeddings: List[torch.Tensor]):
         # Check if classifier has any existing classes (before updating mappings)
         has_existing_classes = len(self.label_to_id) > 0
 
@@ -250,9 +308,6 @@ class AdaptiveClassifier(ModelHubMixin):
             idx = len(self.label_to_id)
             self.label_to_id[label] = idx
             self.id_to_label[idx] = label
-
-        # Get embeddings for all texts
-        embeddings = self._get_embeddings(texts)
 
         # Add examples to memory and update training history
         for text, embedding, label in zip(texts, embeddings, labels):
@@ -440,7 +495,7 @@ class AdaptiveClassifier(ModelHubMixin):
                 
                 # Add EWC loss if applicable
                 if ewc is not None:
-                    ewc_loss = ewc.ewc_loss(batch_size=len(batch_embeddings))
+                    ewc_loss = ewc.ewc_loss(batch_size=len(batch_embeddings), model=self.adaptive_head)
                     loss = task_loss + ewc_loss
                 else:
                     loss = task_loss
@@ -879,6 +934,8 @@ class AdaptiveClassifier(ModelHubMixin):
             are present, which shifts it more than removing from a live
             classifier would.
         """
+        if isinstance(texts, str):
+            raise ValueError("texts must be a list of strings, not a single string")
         if not texts:
             raise ValueError("Empty input list")
         if label is not None and label not in self.label_to_id:
@@ -1062,7 +1119,7 @@ class AdaptiveClassifier(ModelHubMixin):
 
         # Save configuration and metadata
         config_dict = {
-            'model_name': self.model.config._name_or_path,
+            'model_name': self._base_model_name(),
             'embedding_dim': self.embedding_dim,
             'label_to_id': self.label_to_id,
             'id_to_label': {str(k): v for k, v in self.id_to_label.items()},
@@ -1314,6 +1371,14 @@ class AdaptiveClassifier(ModelHubMixin):
         with open(model_path / "config.json", "r", encoding="utf-8") as f:
             config_dict = json.load(f)
 
+        # A saved multi-label classifier loaded through the base class would come back as a
+        # single-label one: its sigmoid head read as softmax logits, and no thresholds.
+        if cls is AdaptiveClassifier and 'multilabel' in config_dict:
+            from .multilabel import MultiLabelAdaptiveClassifier
+            return MultiLabelAdaptiveClassifier._from_pretrained(
+                str(model_path), use_onnx=use_onnx, prefer_quantized=prefer_quantized,
+                trust_remote_code=trust_remote_code, **kwargs)
+
         # Classifiers saved before 0.2.0 were embedded with CLS pooling, and
         # their stored config has no 'pooling' key. Reloading them under the new
         # 'auto' default would re-embed every prototype differently and silently
@@ -1405,6 +1470,7 @@ class AdaptiveClassifier(ModelHubMixin):
             classifier.tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, trust_remote_code=trust_remote_code)
 
             # Initialize memory and other components
+            classifier._model_name = config_dict['model_name']
             classifier.embedding_dim = classifier.model.config.hidden_size
             classifier.memory = PrototypeMemory(
                 classifier.embedding_dim,
@@ -1491,6 +1557,15 @@ class AdaptiveClassifier(ModelHubMixin):
             classifier._initialize_adaptive_head()
             classifier.adaptive_head.load_state_dict(adaptive_head_params)
 
+        # Prototypes were averaged over every example a class was trained on, but only a few
+        # are kept. Remember the real counts so later additions move a prototype by their
+        # proper share (only when the count was saved; the estimate below is too rough).
+        if classifier.training_history:
+            cap = classifier.config.max_examples_per_class
+            for label in classifier.memory.prototypes:
+                classifier.memory.set_prototype_base(
+                    label, min(classifier.training_history.get(label, 0), cap))
+
         # Backward compatibility: estimate training history if not present
         if not classifier.training_history:
             for label, examples in saved_examples.items():
@@ -1531,7 +1606,7 @@ pip install adaptive-classifier
 
 ## Model Details
 
-- Base Model: {self.model.config._name_or_path}
+- Base Model: {self._base_model_name()}
 - Number of Classes: {stats['num_classes']}
 - Total Examples: {stats['total_examples']}
 - Embedding Dimension: {self.embedding_dim}
@@ -1654,7 +1729,7 @@ This model:
             return save_directory
 
         # Get the base model name
-        model_name = self.model.config._name_or_path
+        model_name = self._base_model_name()
 
         logger.info(f"Exporting {model_name} to ONNX format...")
 
@@ -1799,6 +1874,7 @@ This model:
             kwargs['device'] = device
         return cls._from_pretrained(save_dir, use_onnx=use_onnx, prefer_quantized=prefer_quantized, trust_remote_code=trust_remote_code, **kwargs)
     
+    @_synchronized
     def to(self, device: str) -> 'AdaptiveClassifier':
         """Move the model to specified device.
         
@@ -1915,34 +1991,39 @@ This model:
             was_training = self.model.training
             self.model.eval()
 
-        # Get embeddings
+        # Encode in chunks of `batch_size`: one forward pass over a long list needs memory
+        # proportional to the whole list.
+        chunk = max(1, int(getattr(self.config, 'batch_size', 32) or 32))
+        result = []
         with torch.no_grad():
-            inputs = self.tokenizer(
-                texts,
-                max_length=self.config.max_length,
-                truncation=True,
-                padding=True,
-                return_tensors="pt"
-            )
+            for start in range(0, len(texts), chunk):
+                inputs = self.tokenizer(
+                    texts[start:start + chunk],
+                    max_length=self.config.max_length,
+                    truncation=True,
+                    padding=True,
+                    return_tensors="pt"
+                )
 
-            # For ONNX models, inputs don't need to be moved to device
-            if not self.use_onnx:
-                inputs = inputs.to(self.device)
+                # For ONNX models, inputs don't need to be moved to device
+                if not self.use_onnx:
+                    inputs = inputs.to(self.device)
 
-            outputs = self.model(**inputs)
-            embeddings = self._pool(
-                outputs.last_hidden_state, inputs.get('attention_mask')
-            )
+                outputs = self.model(**inputs)
+                embeddings = self._pool(
+                    outputs.last_hidden_state, inputs.get('attention_mask')
+                )
 
-            # Normalize embeddings
-            embeddings = F.normalize(embeddings, p=2, dim=1)
+                # Normalize embeddings
+                embeddings = F.normalize(embeddings, p=2, dim=1)
+                result.extend(emb.cpu() for emb in embeddings)
 
         # Restore original training mode (only for PyTorch models)
         if was_training and hasattr(self.model, 'train'):
             self.model.train()
 
         # Return embeddings as list
-        return [emb.cpu() for emb in embeddings]
+        return result
 
     @_synchronized
     def get_example_statistics(self) -> Dict[str, Any]:
@@ -2066,14 +2147,19 @@ This model:
         classes are ignored.
         """
         if labels is None:
+            # Everything goes, not just the memory: a head left behind would keep predicting.
+            if self.calibration:
+                self.calibration = None
             self.memory.clear()
+            self.label_to_id = {}
+            self.id_to_label = {}
+            self.training_history = {}
+            self.adaptive_head = None
             return
         known = [label for label in labels if label in self.label_to_id]
         if known:
             self.forget(known)
 
-    @_synchronized
-    @_synchronized
     def merge_classifiers(self, other: 'AdaptiveClassifier') -> 'AdaptiveClassifier':
         """Merge another classifier into this one and return this one.
 
@@ -2088,12 +2174,21 @@ This model:
         if self.embedding_dim != other.embedding_dim:
             raise ValueError("Classifiers have different embedding dimensions")
 
+        # Read `other` under its own lock and release it before taking ours, so two
+        # threads merging a into b and b into a cannot wait on each other forever.
         with other._lock:
             incoming = {label: [copy.copy(ex) for ex in examples]
                         for label, examples in other.memory.examples.items()}
             incoming_history = dict(other.training_history)
             incoming_labels = list(other.label_to_id)
+            incoming_radii = {label: other.memory.class_radius(label)
+                              for label in other.memory.prototypes}
 
+        with self._lock:
+            self._merge_snapshot(incoming, incoming_history, incoming_labels, incoming_radii)
+        return self
+
+    def _merge_snapshot(self, incoming, incoming_history, incoming_labels, incoming_radii):
         if self.calibration:
             logger.warning("Discarding confidence calibration: the set of classes changed")
             self.calibration = None
@@ -2110,6 +2205,9 @@ This model:
                 self.memory.add_example(example, label)
         for label, count in incoming_history.items():
             self.training_history[label] = self.training_history.get(label, 0) + count
+        # The other classifier's recorded spread (from examples we no longer see) still applies.
+        for label, radius in incoming_radii.items():
+            self.memory.saved_radii[label] = max(self.memory.saved_radii.get(label, 0.0), radius)
 
         # add_example only rebuilds the search index every few updates; searches
         # would otherwise miss the new classes.
@@ -2118,8 +2216,6 @@ This model:
         if self.memory.examples and self.label_to_id:
             self._initialize_adaptive_head()
             self._train_adaptive_head()
-
-        return self
 
     def _train_adaptive_head(self, epochs: int = 10):
         """Train the adaptive head on every stored example.
@@ -2338,6 +2434,9 @@ This model:
         Returns:
             List of (label, confidence) tuples for strategic predictions
         """
+        if not text:
+            raise ValueError("Empty input text")
+        self._validate_k(k)
         if not self.strategic_mode:
             return self._predict_regular(text, k)
         
@@ -2386,6 +2485,9 @@ This model:
         Returns:
             List of (label, confidence) tuples for robust predictions
         """
+        if not text:
+            raise ValueError("Empty input text")
+        self._validate_k(k)
         if not self.strategic_mode:
             return self._predict_regular(text, k)
         
@@ -2476,11 +2578,21 @@ This model:
         self,
         test_texts: List[str],
         test_labels: List[str],
-        gaming_levels: List[float] = [0.0, 0.5, 1.0]
+        gaming_levels: Sequence[float] = (0.0, 0.5, 1.0)
     ) -> Dict[str, float]:
-        """Evaluate strategic robustness of the classifier."""
+        """Evaluate strategic robustness of the classifier.
+
+        `gaming_levels` are the shares (0 to 1) of inputs that game the classifier.
+        The 0.0 and 1.0 baselines are always included, since the robustness
+        scores compare them.
+        """
         if not self.strategic_mode:
             raise ValueError("Strategic mode not enabled")
+        if not gaming_levels or any(
+            isinstance(level, bool) or not isinstance(level, numbers.Real) or not 0.0 <= level <= 1.0
+            for level in gaming_levels
+        ):
+            raise ValueError(f"gaming_levels must be numbers between 0 and 1; got {list(gaming_levels)!r}")
         if not test_texts or len(test_texts) != len(test_labels):
             raise ValueError("test_texts and test_labels must be non-empty and the same length")
         unknown = sorted(set(test_labels) - set(self.label_to_id))

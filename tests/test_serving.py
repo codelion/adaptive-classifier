@@ -283,3 +283,43 @@ def test_cli_reads_the_key_from_the_environment(saved, launched, monkeypatch):
 def test_cli_fails_clearly_for_a_missing_model(launched, tmp_path):
     with pytest.raises(FileNotFoundError, match="config.json"):
         serving.main([str(tmp_path), "--no-onnx"])
+
+
+# --- unsupported classifiers and a busy event loop -------------------------------------------------------
+
+def test_a_multilabel_classifier_is_refused_with_a_clear_message(base_model):
+    from adaptive_classifier import MultiLabelAdaptiveClassifier
+
+    multi = MultiLabelAdaptiveClassifier(base_model, device="cpu", use_onnx=False)
+    with pytest.raises(ValueError, match="MultiLabelAdaptiveClassifier"):
+        create_app(multi)
+
+
+def test_saving_after_an_update_does_not_block_other_requests(clf, tmp_path, monkeypatch):
+    """A slow save (ONNX export takes seconds) used to freeze /health and /info while it ran."""
+    import time
+
+    real_save = clf.save
+
+    def slow_save(path, *args, **kwargs):
+        time.sleep(1.5)
+        return real_save(path, *args, **kwargs)
+
+    monkeypatch.setattr(clf, "save", slow_save)
+    client = updatable(clf, save_dir=str(tmp_path / "saved"))
+    done = {}
+
+    def update():
+        done["response"] = client.post("/examples", json={"texts": ["tr0_0"], "labels": ["C0"]})
+
+    worker = threading.Thread(target=update)
+    worker.start()
+    time.sleep(0.3)                                   # the update is now inside the slow save
+    started = time.perf_counter()
+    assert client.get("/health").status_code == 200
+    assert client.get("/info").status_code == 200
+    elapsed = time.perf_counter() - started
+    worker.join()
+
+    assert done["response"].status_code == 200
+    assert elapsed < 1.0, f"/health and /info waited {elapsed:.2f}s behind a save"
