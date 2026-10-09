@@ -76,6 +76,10 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e ".[test]"
 
+    - name: Install the Node.js example's dependencies
+      run: npm install --no-audit --no-fund
+      working-directory: examples/javascript
+
     # Everything except tests marked `integration`, run offline against the
     # models prefetched above. Tests marked `integration` run in the job below.
     - name: Run tests
