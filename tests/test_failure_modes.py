@@ -191,8 +191,10 @@ def load(path):
 
 
 def test_a_clean_save_loads_and_predicts_the_same(trained, saved):
-    assert load(saved).predict("great") == pytest.approx(trained.predict("great"), abs=1e-5) \
-        or [l for l, _ in load(saved).predict("great")] == [l for l, _ in trained.predict("great")]
+    before = trained.predict("great")
+    after = load(saved).predict("great")
+    assert [label for label, _ in after] == [label for label, _ in before]
+    assert [score for _, score in after] == pytest.approx([score for _, score in before], abs=1e-5)
 
 
 def test_directory_without_config_says_so(saved):
